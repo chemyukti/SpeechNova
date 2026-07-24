@@ -713,6 +713,77 @@ private fun WaveformBars(level: Float, active: Boolean, modifier: Modifier = Mod
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// LEARN — vocabulary & speak-and-check pronunciation practice
+// One English "master" word is translated on-device into the language being
+// learned, so the same list works for every supported language.
+// ═══════════════════════════════════════════════════════════════════════
+data class VocabItem(
+    val english: String,       // meaning shown to the learner
+    val translated: String,    // the word in the target language ("" until loaded)
+    val roman: String          // read-aloud romanization (Devanagari only, else "")
+)
+
+/** Result of one pronunciation attempt. */
+data class PracticeResult(
+    val target: String,   // the word the learner was asked to say
+    val correct: Boolean,
+    val heard: String     // what speech recognition actually understood
+)
+
+// A short, high-utility set of everyday words. Kept in English and translated
+// on demand, so we never hand-author (and mis-spell) 19 languages.
+private val vocabularyMaster = listOf(
+    "Hello", "Thank you", "Yes", "No", "Please", "Sorry",
+    "Water", "Food", "Friend", "Good", "Today", "Tomorrow",
+    "Money", "Help", "Doctor", "Hotel", "Airport", "Train",
+    "Left", "Right", "One", "Two", "Three", "Big",
+    "Small", "Hot", "Cold", "Where", "Welcome", "Goodbye"
+)
+
+/** Strip to comparable letters/digits (drops spaces, punctuation, case). */
+private fun normalizeForCompare(s: String): String =
+    s.lowercase().filter { it.isLetterOrDigit() }
+
+private fun levenshtein(a: String, b: String): Int {
+    if (a == b) return 0
+    if (a.isEmpty()) return b.length
+    if (b.isEmpty()) return a.length
+    var prev = IntArray(b.length + 1) { it }
+    var curr = IntArray(b.length + 1)
+    for (i in 1..a.length) {
+        curr[0] = i
+        for (j in 1..b.length) {
+            val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+            curr[j] = minOf(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+        }
+        val tmp = prev; prev = curr; curr = tmp
+    }
+    return prev[b.length]
+}
+
+private fun similar(a: String, b: String, threshold: Double): Boolean {
+    if (a.isEmpty() || b.isEmpty()) return false
+    if (a == b || a.contains(b) || b.contains(a)) return true
+    val dist = levenshtein(a, b)
+    val ratio = 1.0 - dist.toDouble() / maxOf(a.length, b.length)
+    return ratio >= threshold
+}
+
+/** Lenient pronunciation check — speech recognition is never letter-perfect,
+ *  so we accept close matches (and, for Devanagari, romanized matches too). */
+private fun pronunciationMatches(target: String, heard: String, lang: String): Boolean {
+    val t = normalizeForCompare(target)
+    val h = normalizeForCompare(heard)
+    if (similar(t, h, 0.7)) return true
+    if (hasLetterLevelGuide(lang)) {
+        val tr = normalizeForCompare(devanagariToLatin(target))
+        val hr = normalizeForCompare(devanagariToLatin(heard))
+        if (similar(tr, hr, 0.7)) return true
+    }
+    return false
+}
+
 @Composable
 fun SpeechNovaApp() {
     val context = LocalContext.current
@@ -749,6 +820,14 @@ fun SpeechNovaApp() {
     // LEARN screen
     var learnLang by remember { mutableStateOf(toLang) }
     var learnAdDismissed by remember { mutableStateOf(false) }
+    // Vocabulary (English master list, translated on-device into learnLang) plus
+    // the speak-and-check pronunciation practice built on top of it.
+    val vocabulary = remember { mutableStateListOf<VocabItem>() }
+    var vocabLoading by remember { mutableStateOf(false) }
+    var vocabLoadedLang by remember { mutableStateOf("") }
+    var practicingWord by remember { mutableStateOf<String?>(null) }
+    var practiceResult by remember { mutableStateOf<PracticeResult?>(null) }
+    var practiceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
     // FACE-TO-FACE (continuous conversation, gated behind a rewarded ad)
     var faceToFaceUnlockedUntil by remember { mutableLongStateOf(0L) }
@@ -1629,6 +1708,118 @@ fun SpeechNovaApp() {
         }
     }
 
+    // ── LEARN: build the vocabulary list for a language (translate on-device) ──
+    fun loadVocabulary(lang: String) {
+        if (vocabLoadedLang == lang && vocabulary.isNotEmpty()) return
+        vocabLoadedLang = lang
+        practiceResult = null
+        vocabulary.clear()
+        if (lang == "English") {
+            vocabulary.addAll(vocabularyMaster.map { VocabItem(it, it, "") })
+            vocabLoading = false
+            return
+        }
+        vocabLoading = true
+        vocabulary.addAll(vocabularyMaster.map { VocabItem(it, "", "") })
+        val opts = TranslatorOptions.Builder()
+            .setSourceLanguage(TranslateLanguage.ENGLISH)
+            .setTargetLanguage(langToMLKit[lang] ?: TranslateLanguage.HINDI)
+            .build()
+        val tr = Translation.getClient(opts)
+        tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
+            .addOnSuccessListener {
+                var remaining = vocabularyMaster.size
+                vocabularyMaster.forEachIndexed { i, word ->
+                    tr.translate(word)
+                        .addOnSuccessListener { translated ->
+                            // Ignore stale results if the learner switched language.
+                            if (vocabLoadedLang == lang && i < vocabulary.size) {
+                                val t = translated.trim()
+                                val roman = if (hasLetterLevelGuide(lang)) devanagariToLatin(t) else ""
+                                vocabulary[i] = VocabItem(word, t, roman)
+                            }
+                            if (--remaining == 0) { vocabLoading = false; tr.close() }
+                        }
+                        .addOnFailureListener {
+                            if (--remaining == 0) { vocabLoading = false; tr.close() }
+                        }
+                }
+            }
+            .addOnFailureListener {
+                vocabLoading = false
+                tr.close()
+            }
+    }
+
+    fun stopPractice() {
+        practiceRecognizer?.destroy()
+        practiceRecognizer = null
+        practicingWord = null
+    }
+
+    // ── LEARN: listen to the learner say a word and tell them if it was right ──
+    fun practiceWord(target: String, lang: String) {
+        if (target.isBlank()) return
+        if (!hasMicPermission()) {
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            practiceResult = PracticeResult(target, false, "(speech recognition unavailable)")
+            return
+        }
+        if (isRecording) stopRecording()
+        practiceRecognizer?.destroy()
+        val sr = SpeechRecognizer.createSpeechRecognizer(context)
+        practiceRecognizer = sr
+        practicingWord = target
+        practiceResult = null
+
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(b: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onError(error: Int) {
+                if (practiceRecognizer === sr) practiceRecognizer = null
+                practicingWord = null
+                practiceResult = PracticeResult(target, false, "(didn't catch that — try again)")
+                sr.destroy()
+            }
+
+            override fun onResults(results: Bundle?) {
+                val heard = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.trim().orEmpty()
+                val correct = pronunciationMatches(target, heard, lang)
+                practicingWord = null
+                practiceResult = PracticeResult(target, correct, heard)
+                if (practiceRecognizer === sr) practiceRecognizer = null
+                sr.destroy()
+                // Always play the correct pronunciation back so they can learn it.
+                selectVoice(lang)
+                tts?.setSpeechRate(0.6f)
+                tts?.speak(target, TextToSpeech.QUEUE_FLUSH, null, "practice")
+            }
+
+            override fun onPartialResults(partial: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[lang] ?: "en-IN")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+        try {
+            sr.startListening(intent)
+        } catch (_: Exception) {
+            practicingWord = null
+            if (practiceRecognizer === sr) practiceRecognizer = null
+        }
+    }
+
     LaunchedEffect(Unit) {
         tts = TextToSpeech(context) { st ->
             if (st == TextToSpeech.SUCCESS) {
@@ -1664,6 +1855,11 @@ fun SpeechNovaApp() {
         }
     }
 
+    // Build the vocabulary list the first time LEARN is opened for a language.
+    LaunchedEffect(currentScreen, learnLang) {
+        if (currentScreen == Screen.LEARN) loadVocabulary(learnLang)
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             isRecording = false
@@ -1671,6 +1867,7 @@ fun SpeechNovaApp() {
             tts?.shutdown()
             recognizer?.destroy()
             face2faceRecognizer?.destroy()
+            practiceRecognizer?.destroy()
             mlTranslator?.close()
             reverseTranslator?.close()
             handler.removeCallbacksAndMessages(null)
@@ -1769,9 +1966,18 @@ fun SpeechNovaApp() {
                     learnLang = learnLang,
                     langList = langList,
                     adDismissed = learnAdDismissed,
+                    vocabulary = vocabulary,
+                    vocabLoading = vocabLoading,
+                    practicingWord = practicingWord,
+                    practiceResult = practiceResult,
                     onDismissAd = { learnAdDismissed = true },
-                    onPickLang = { learnLang = it },
-                    onSpeakLetter = { glyph -> speakLetter(glyph, learnLang) }
+                    onPickLang = {
+                        stopPractice()
+                        learnLang = it
+                    },
+                    onSpeakLetter = { glyph -> speakLetter(glyph, learnLang) },
+                    onHearWord = { word -> speakLetter(word, learnLang) },
+                    onPracticeWord = { word -> practiceWord(word, learnLang) }
                 )
 
                 Screen.PHRASES -> PhrasesScreenContent(
@@ -1829,12 +2035,12 @@ fun SpeechNovaApp() {
 
         // ── Bottom navigation ──
         SpeechNovaBottomBar(current = currentScreen) { target ->
-            if (target != Screen.FACE2FACE) {
-                // Leaving conversation mode: make sure the continuous mic is off.
-                stopFaceToFaceListening()
-            } else {
-                if (isRecording) stopRecording()
-                if (!faceUnlocked) loadRewardedAd() // make sure an ad is ready for the gate
+            // Whenever we change tabs, stop any mic that belongs to the tab we leave.
+            if (target != Screen.FACE2FACE) stopFaceToFaceListening()
+            if (target != Screen.LEARN) stopPractice()
+            if (target != Screen.HOME && isRecording) stopRecording()
+            if (target == Screen.FACE2FACE && !faceUnlocked) {
+                loadRewardedAd() // make sure an ad is ready for the gate
             }
             currentScreen = target
         }
@@ -2035,12 +2241,12 @@ fun SpeechNovaApp() {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth(0.92f)
-                    .heightIn(max = 620.dp)
-                    .padding(vertical = 24.dp),
+                    .fillMaxHeight(0.9f)
+                    .padding(vertical = 16.dp),
                 color = Color(0xFF1e293b),
                 shape = RoundedCornerShape(20.dp)
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
+                Column(modifier = Modifier.fillMaxSize().padding(18.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2053,9 +2259,12 @@ fun SpeechNovaApp() {
                     }
                     Spacer(Modifier.height(10.dp))
 
+                    // Flexes to fill the space above the pinned button, so the
+                    // "Got it" button is always visible no matter the screen size.
                     Column(
                         modifier = Modifier
-                            .heightIn(max = 460.dp)
+                            .weight(1f)
+                            .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
                         HelpStep("1", "Four simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases, and 🎭 Face-to-Face.")
@@ -2170,6 +2379,7 @@ private fun HomeScreenContent(
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     HeaderShortcut(emoji = "❓", label = "How to use", onClick = onShowHelp)
+                    HeaderShortcut(emoji = "📷", label = "Scan", onClick = onScanCamera)
                     HeaderShortcut(emoji = "⭐", label = "Saved", onClick = onShowFavorites)
                     HeaderShortcut(emoji = "⚙️", label = "Settings", onClick = onShowSettings)
                 }
@@ -2304,39 +2514,8 @@ private fun HomeScreenContent(
 
         Spacer(Modifier.height(12.dp))
 
-        // ── Camera scan ──
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clickable(onClick = onScanCamera),
-            color = Color(0xFF1e293b),
-            shape = RoundedCornerShape(14.dp),
-            shadowElevation = 2.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("📷", fontSize = 20.sp)
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Scan text with camera",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "Point at a sign or menu in $fromLang — no typing needed",
-                        color = Color.White.copy(alpha = 0.6f),
-                        fontSize = 11.sp
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
+        // (Camera OCR now lives in the header menu as 📷 Scan, keeping the
+        // Home body focused on speak-and-translate.)
 
         // ── Messages ──
         Surface(
@@ -2592,9 +2771,15 @@ private fun LearnScreenContent(
     learnLang: String,
     langList: List<String>,
     adDismissed: Boolean,
+    vocabulary: List<VocabItem>,
+    vocabLoading: Boolean,
+    practicingWord: String?,
+    practiceResult: PracticeResult?,
     onDismissAd: () -> Unit,
     onPickLang: (String) -> Unit,
-    onSpeakLetter: (String) -> Unit
+    onSpeakLetter: (String) -> Unit,
+    onHearWord: (String) -> Unit,
+    onPracticeWord: (String) -> Unit
 ) {
     val script = alphabetScriptFor(learnLang)
     Column(
@@ -2614,9 +2799,9 @@ private fun LearnScreenContent(
                 .padding(vertical = 18.dp, horizontal = 16.dp)
         ) {
             Column {
-                Text("📚 Learn the alphabet", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("📚 Learn & practice", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Tap any letter to hear how it sounds",
+                    "Tap a letter or word to hear it — then speak it and get checked",
                     color = Color.White.copy(alpha = 0.85f),
                     fontSize = 12.sp
                 )
@@ -2741,7 +2926,132 @@ private fun LearnScreenContent(
                 }
                 Spacer(Modifier.height(10.dp))
             }
-            Spacer(Modifier.height(8.dp))
+        }
+
+        // ── Vocabulary & speak-and-check practice ──
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "🗣️ Words to practice",
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.width(8.dp))
+            if (vocabLoading) {
+                CircularProgressIndicator(
+                    color = Color(0xFF34d399),
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+        Text(
+            "Tap 🔊 to hear a word, then 🎤 to say it — we'll tell you if it's right.",
+            color = Color.White.copy(alpha = 0.6f),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(Modifier.height(8.dp))
+
+        vocabulary.forEach { item ->
+            VocabCard(
+                item = item,
+                isListening = practicingWord == item.translated && item.translated.isNotEmpty(),
+                result = practiceResult?.takeIf { it.target == item.translated && item.translated.isNotEmpty() },
+                onHear = { onHearWord(item.translated) },
+                onPractice = { onPracticeWord(item.translated) }
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+// ── One vocabulary word: shows meaning + word, hear it, and practice saying it. ──
+@Composable
+private fun VocabCard(
+    item: VocabItem,
+    isListening: Boolean,
+    result: PracticeResult?,
+    onHear: () -> Unit,
+    onPractice: () -> Unit
+) {
+    val ready = item.translated.isNotEmpty()
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 5.dp),
+        color = Color(0xFF1e293b),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(item.english, color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        if (ready) item.translated else "…",
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (item.roman.isNotEmpty()) {
+                        Text(item.roman, color = Color(0xFFa5b4fc), fontSize = 13.sp)
+                    }
+                }
+                // Hear
+                IconButton(
+                    onClick = onHear,
+                    enabled = ready,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF334155))
+                ) {
+                    Text("🔊", fontSize = 20.sp)
+                }
+                Spacer(Modifier.width(10.dp))
+                // Practice (speak)
+                IconButton(
+                    onClick = onPractice,
+                    enabled = ready,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(if (isListening) Color(0xFFef4444) else Color(0xFF10b981))
+                ) {
+                    Text(if (isListening) "🔴" else "🎤", fontSize = 20.sp)
+                }
+            }
+
+            if (isListening) {
+                Spacer(Modifier.height(8.dp))
+                Text("🎙️ Listening… say the word now", color = Color(0xFF34d399), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            } else if (result != null) {
+                Spacer(Modifier.height(8.dp))
+                if (result.correct) {
+                    Text("✅ Correct! Nicely done.", color = Color(0xFF6ee7b7), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                } else {
+                    Column {
+                        Text("❌ Not quite.", color = Color(0xFFfca5a5), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "You said: \"${result.heard}\"",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            "Tap 🔊 to hear the correct pronunciation and try again.",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
         }
     }
 }
