@@ -262,8 +262,8 @@ private val devanagariConsonants = mapOf(
     // Nukta (borrowed-sound) consonants, common in Hindi/Marathi/Urdu loanwords.
     // Written as explicit \u escapes (each is ONE precomposed Devanagari code
     // point, U+0958–U+095F) so this can never become a multi-code-point Char.
-    'क़' to "qa", 'ख़' to "kha", 'ग़' to "gha", 'ज़' to "za",
-    'ड़' to "ra", 'ढ़' to "rha", 'फ़' to "fa", 'य़' to "ya"
+    '\u0958' to "qa", '\u0959' to "kha", '\u095A' to "gha", '\u095B' to "za",
+    '\u095C' to "ra", '\u095D' to "rha", '\u095E' to "fa", '\u095F' to "ya"
 )
 // Note: क्ष and ज्ञ are not hardcoded here — they're each a two-consonant
 // sequence joined by a virama, so the general algorithm renders them correctly.
