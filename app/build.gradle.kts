@@ -12,8 +12,10 @@ android {
         applicationId = "com.parashmani.speechnova"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.5.0"
+        // 7 was rejected by Play for ad content inconsistent with the content
+        // rating; a rejected version code can never be re-uploaded.
+        versionCode = 8
+        versionName = "1.5.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -77,6 +79,10 @@ dependencies {
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+
+    // Reads the EXIF orientation of a captured photo so text on a sideways
+    // frame is still recognised.
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
