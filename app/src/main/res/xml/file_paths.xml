@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Where camera scans are written before OCR reads them back. Cache only:
+         the photo is deleted as soon as the next scan starts, and the system
+         can reclaim it at any time. -->
+    <cache-path name="scans" path="scans/" />
+</paths>

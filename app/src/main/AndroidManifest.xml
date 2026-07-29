@@ -63,6 +63,19 @@
                 <data android:scheme="https" android:host="speechnova.app" />
             </intent-filter>
         </activity>
+
+        <!-- Lets the camera app write the full-resolution scan photo into our
+             own cache directory. Without this the app can only receive the
+             camera's thumbnail, which is too small to run OCR on. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

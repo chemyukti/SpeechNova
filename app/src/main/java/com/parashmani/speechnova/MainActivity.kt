@@ -22,7 +22,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -72,12 +72,10 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdLoader
-import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.FullScreenContentCallback
 import com.google.android.gms.ads.LoadAdError
-import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.nativead.MediaView
 import com.google.android.gms.ads.nativead.NativeAd
 import com.google.android.gms.ads.nativead.NativeAdView
@@ -137,7 +135,9 @@ class MainActivity : ComponentActivity() {
         Log.i("SpeechNova", APP_COPYRIGHT)
         Log.i("SpeechNova", "Identity: $APP_IDENTITY")
 
-        MobileAds.initialize(this) {}
+        // Restricts served ads to general-audience (G) content *before* the
+        // SDK starts, so the ads stay consistent with the store rating.
+        AdPolicy.initialize(this)
 
         setContent {
             MaterialTheme {
@@ -514,7 +514,7 @@ private fun NativeAdCard(adUnitId: String, modifier: Modifier = Modifier) {
                 }
             })
             .build()
-        adLoader.loadAd(AdRequest.Builder().build())
+        adLoader.loadAd(AdPolicy.request())
 
         onDispose { nativeAd?.destroy() }
     }
@@ -1233,7 +1233,7 @@ fun SpeechNovaApp() {
         else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
 
-    fun scanTextAndTranslate(bitmap: Bitmap) {
+    fun scanTextAndTranslate(scan: CapturedScan) {
         if (!scriptSupportsOcr(fromLang)) {
             messages.add(
                 TranslationMessage(
@@ -1241,13 +1241,17 @@ fun SpeechNovaApp() {
                     type = "system"
                 )
             )
+            scan.bitmap.recycle()
             return
         }
         status = "📷 Reading text..."
-        val image = InputImage.fromBitmap(bitmap, 0)
-        getOcrRecognizer(fromLang).process(image)
+        // The recognizer applies the rotation itself, so a photo taken with the
+        // phone on its side still reads as upright text.
+        val image = InputImage.fromBitmap(scan.bitmap, scan.rotationDegrees)
+        val recognizer = getOcrRecognizer(fromLang)
+        recognizer.process(image)
             .addOnSuccessListener { visionText ->
-                val recognizedText = visionText.text.trim()
+                val recognizedText = visionText.toReadableText()
                 if (recognizedText.isEmpty()) {
                     status = "❌ No text found — move closer and try again"
                     return@addOnSuccessListener
@@ -1264,6 +1268,12 @@ fun SpeechNovaApp() {
             }
             .addOnFailureListener {
                 status = "❌ Couldn't read the image, try again"
+            }
+            // One recognizer per scan, closed once the scan is done — the
+            // native model it holds is far too big to leak per photo.
+            .addOnCompleteListener {
+                recognizer.close()
+                scan.bitmap.recycle()
             }
     }
 
@@ -1379,7 +1389,7 @@ fun SpeechNovaApp() {
         RewardedAd.load(
             context,
             AD_UNIT_REWARDED,
-            AdRequest.Builder().build(),
+            AdPolicy.request(),
             object : RewardedAdLoadCallback() {
                 override fun onAdLoaded(ad: RewardedAd) {
                     rewardedAd = ad
@@ -1687,22 +1697,42 @@ fun SpeechNovaApp() {
         context, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
 
-    // TakePicturePreview hands back a Bitmap directly — no FileProvider/URI needed.
+    // TakePicture writes the full-resolution photo to a file we own. The old
+    // TakePicturePreview contract handed back the camera's thumbnail instead,
+    // which is far too small for the recognizer to read more than the single
+    // largest word on the page.
+    var pendingScanUri by remember { mutableStateOf<Uri?>(null) }
+
     val cameraCaptureLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicturePreview()
-    ) { bitmap: Bitmap? ->
-        if (bitmap != null) {
-            scanTextAndTranslate(bitmap)
-        } else {
-            status = "📷 Scan cancelled"
+        ActivityResultContracts.TakePicture()
+    ) { captured: Boolean ->
+        val uri = pendingScanUri
+        pendingScanUri = null
+        when {
+            !captured || uri == null -> status = "📷 Scan cancelled"
+            else -> {
+                val scan = decodeCapturedScan(context, uri)
+                if (scan == null) status = "❌ Couldn't read the photo, try again"
+                else scanTextAndTranslate(scan)
+            }
         }
+    }
+
+    fun launchCameraScan() {
+        val uri = createScanCaptureUri(context)
+        if (uri == null) {
+            status = "❌ Couldn't open the camera — no space to save the photo"
+            return
+        }
+        pendingScanUri = uri
+        cameraCaptureLauncher.launch(uri)
     }
 
     val cameraPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            cameraCaptureLauncher.launch(null)
+            launchCameraScan()
         } else {
             status = "❌ Camera permission denied"
         }
@@ -1932,7 +1962,7 @@ fun SpeechNovaApp() {
                     },
                     onScanCamera = {
                         if (!hasCameraPermission()) cameraPermLauncher.launch(Manifest.permission.CAMERA)
-                        else cameraCaptureLauncher.launch(null)
+                        else launchCameraScan()
                     },
                     onPlayAll = { repeatAllConversation() },
                     onListen = { text -> repeatSpeech(text, toLang) },
@@ -2027,7 +2057,7 @@ fun SpeechNovaApp() {
                     AdView(ctx).apply {
                         setAdSize(AdSize.BANNER)
                         adUnitId = AD_UNIT_BANNER
-                        loadAd(AdRequest.Builder().build())
+                        loadAd(AdPolicy.request())
                     }
                 }
             )
