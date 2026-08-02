@@ -88,6 +88,7 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.nl.translate.TranslatorOptions
 import java.util.*
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.sin
 
@@ -614,6 +615,25 @@ private fun SettingRow(
             )
         }
     }
+}
+
+// A heading that groups the How-to-Use steps, so a long guide can be skimmed
+// for the one thing you came looking for instead of read end to end.
+@Composable
+private fun HelpSection(title: String) {
+    Text(
+        title.uppercase(),
+        color = Color(0xFFa5b4fc),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp)
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.12f))
+    )
 }
 
 // One numbered step in the How-to-Use guide.
@@ -1962,11 +1982,19 @@ fun SpeechNovaApp() {
         showHelp = true // first thing a beginner sees: how to use the app
     }
 
-    // Drive the continuous Face-to-Face loop from the current screen.
-    LaunchedEffect(currentScreen) {
+    // Drive the continuous Face-to-Face loop from the current screen *and* the
+    // language pair. Keying on the languages is what makes swapping work
+    // without leaving the screen: the recognizer is created for one specific
+    // language, so a swap has to tear the old one down and start a fresh one.
+    LaunchedEffect(currentScreen, fromLang, toLang) {
         if (currentScreen == Screen.FACE2FACE && hasMicPermission()) {
             topBubble = ""
             bottomBubble = ""
+            // Drop the recognizer listening in the previous language, then give
+            // the speech service a moment before asking for a new one — back to
+            // back destroy/create otherwise comes back RECOGNIZER_BUSY.
+            stopFaceToFaceListening()
+            delay(250)
             startFaceToFaceListening()
         } else {
             stopFaceToFaceListening()
@@ -2118,10 +2146,12 @@ fun SpeechNovaApp() {
                     isListening = isFaceListening,
                     micLevel = micLevel,
                     onSwapLangs = {
+                        // Just change the languages — the effect above owns the
+                        // recognizer's lifecycle and restarts it in the new
+                        // direction, so the conversation keeps running.
                         val f = fromLang; fromLang = toLang; toLang = f
                         learnLang = toLang
                         topBubble = ""; bottomBubble = ""
-                        stopFaceToFaceListening()
                         downloadModel(fromLang, toLang)
                     }
                 )
@@ -2397,14 +2427,37 @@ fun SpeechNovaApp() {
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        HelpStep("1", "Four simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases, and 🎭 Face-to-Face.")
-                        HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi.")
-                        HelpStep("3", "Speak", "Tap the big green button and talk clearly. Tap it again to stop.")
-                        HelpStep("4", "Listen", "Your translation appears and is spoken out loud automatically. Tap 🔊 Listen to hear it again anytime.")
-                        HelpStep("5", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that it works even offline.")
-                        HelpStep("6", "Learn the letters", "Open 📚 Learn to see the alphabet of your language. Tap any letter to hear how it sounds.")
-                        HelpStep("7", "No mic needed", "Tap 📖 Phrases for ready-made travel sentences you can use without speaking at all.")
-                        HelpStep("8", "Talking in person?", "Open 🎭 Face-to-Face, lay the phone flat between you, then just talk — it listens and translates continuously, with no buttons to press.")
+                        HelpSection("Getting started")
+                        HelpStep("1", "Four simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, and 🎭 Face-to-Face for talking with someone.")
+                        HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
+                        HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works even with no internet.")
+
+                        HelpSection("Translating by voice")
+                        HelpStep("4", "🎤 START", "Tap the big green button and talk clearly. It translates each sentence as you finish it. Tap ⏹ STOP when you're done.")
+                        HelpStep("5", "🔴 RECORD, then 🌍 TRANSLATE", "Turn on \"Speak Multiple Sentences\" in ⚙️ Settings and the button becomes 🔴 RECORD. Say as much as you like, then tap 🌍 TRANSLATE to do it all in one go.")
+                        HelpStep("6", "🔊 Listen", "Every translation is spoken out loud automatically. Tap 🔊 Listen beside it to hear it again as many times as you need.")
+                        HelpStep("7", "🔊 Play all", "At the top of the conversation, replays the whole conversation from the beginning — handy for going back over what was said.")
+
+                        HelpSection("Keeping what you translate")
+                        HelpStep("8", "☆ Save", "Tap the star beside a translation to save it. It fills in ⭐ to show it's kept.")
+                        HelpStep("9", "⭐ Saved", "The Saved button at the top of Home lists everything you starred, so your useful phrases are one tap away. From there you can listen, copy, share, or remove any of them.")
+                        HelpStep("10", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
+                        HelpStep("11", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
+
+                        HelpSection("Other ways to translate")
+                        HelpStep("12", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("13", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("14", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("15", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+
+                        HelpSection("Learning as you go")
+                        HelpStep("16", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("17", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
+                        HelpStep("18", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+
+                        HelpSection("Making it yours")
+                        HelpStep("19", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("20", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -2453,9 +2506,18 @@ private fun HomeScreenContent(
     onPrimaryButton: () -> Unit,
     onTranslateRecorded: () -> Unit
 ) {
+    // Two layers: everything scrolls except the speak button, which is pinned
+    // to the bottom. It used to sit at the end of the scrolling column, so
+    // once a conversation grew past one screen the one control the whole app
+    // depends on was somewhere off-screen, and people had no reason to know
+    // to scroll for it.
+    Column(modifier = Modifier.fillMaxSize()) {
+
+    // ── Layer 1: everything that scrolls ──
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .weight(1f)
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
     ) {
         // ── HEADER ──
@@ -2828,13 +2890,27 @@ private fun HomeScreenContent(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Text(
+            "$APP_CREDIT  •  $APP_COPYRIGHT",
+            color = Color.White.copy(alpha = 0.4f),
+            fontSize = 10.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+        )
+    } // end of the scrolling layer
 
-        // ── START / RECORD / TRANSLATE buttons ──
+    // ── Layer 2: START / RECORD / TRANSLATE — pinned, never scrolls away ──
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFF0f172a),
+        shadowElevation = 10.dp
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = if (recordingMode && isRecording) Arrangement.SpaceBetween else Arrangement.Center
         ) {
             Button(
@@ -2880,17 +2956,9 @@ private fun HomeScreenContent(
                 }
             }
         }
+    } // end of the pinned action bar
 
-        Text(
-            "$APP_CREDIT  •  $APP_COPYRIGHT",
-            color = Color.White.copy(alpha = 0.4f),
-            fontSize = 10.sp,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp)
-        )
-    }
+    } // end of the two-layer column
 }
 
 // ══════════════════════════════════════════════════════════════════════════
