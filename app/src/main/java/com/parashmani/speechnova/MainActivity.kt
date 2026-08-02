@@ -17,9 +17,6 @@
 package com.parashmani.speechnova
 
 import android.Manifest
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -69,18 +66,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdLoader
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
-import com.google.android.gms.ads.FullScreenContentCallback
 import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.nativead.MediaView
 import com.google.android.gms.ads.nativead.NativeAd
 import com.google.android.gms.ads.nativead.NativeAdView
-import com.google.android.gms.ads.rewarded.RewardedAd
-import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
@@ -96,7 +89,6 @@ import com.google.mlkit.nl.translate.TranslatorOptions
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.sin
-import kotlinx.coroutines.delay
 
 private const val APP_ENCODED = "U3BlZWNoTm92YSB8IERldmVsb3BlZCBieSBNci5QYXJhc2htYW5p"
 private val APP_IDENTITY: String by lazy {
@@ -110,12 +102,12 @@ private const val APP_COPYRIGHT = "© 2025 Parashmani. All rights reserved."
 private const val APP_PACKAGE = "com.parashmani.speechnova"
 
 // ── Ad unit IDs ────────────────────────────────────────────────────────────
+// Banner and native only. SpeechNova is in the Families programme, where
+// full-screen formats that cannot be dismissed within five seconds are
+// prohibited — a rewarded ad is unclosable for its whole run by design, so
+// there is no rewarded unit here and no gate for one to sit behind.
 private const val AD_UNIT_BANNER = "ca-app-pub-8499432704301966/9196802502"
 private const val AD_UNIT_NATIVE = "ca-app-pub-8499432704301966/9457225173"
-private const val AD_UNIT_REWARDED = "ca-app-pub-8499432704301966/2705659156"
-
-// Face-to-Face unlock length granted per rewarded ad.
-private const val FACE_UNLOCK_MS = 20 * 60 * 1000L
 
 class MainActivity : ComponentActivity() {
 
@@ -149,17 +141,6 @@ class MainActivity : ComponentActivity() {
 
 /** The four top-level destinations reachable from the bottom navigation bar. */
 enum class Screen { HOME, LEARN, PHRASES, FACE2FACE }
-
-/** Walk up the Context chain to find the hosting Activity (needed to show a
- *  full-screen rewarded ad from inside a Compose tree). */
-private fun Context.findActivity(): Activity? {
-    var ctx: Context? = this
-    while (ctx is ContextWrapper) {
-        if (ctx is Activity) return ctx
-        ctx = ctx.baseContext
-    }
-    return null
-}
 
 data class TranslationMessage(
     val displayText: String,
@@ -400,10 +381,19 @@ private fun buildNativeAdView(context: android.content.Context): NativeAdView {
         setBackgroundColor(android.graphics.Color.parseColor("#1e293b"))
     }
 
+    // The Families rules require an ad to be obviously an ad — a child must
+    // never mistake it for part of the app. A 10sp grey "Ad" did not clear
+    // that bar, so this is a high-contrast badge instead.
     val adLabel = android.widget.TextView(context).apply {
-        text = "Ad"
-        setTextColor(android.graphics.Color.parseColor("#94a3b8"))
-        textSize = 10f
+        text = "  ADVERTISEMENT  "
+        setTextColor(android.graphics.Color.parseColor("#0b1220"))
+        setBackgroundColor(android.graphics.Color.parseColor("#fbbf24"))
+        textSize = 11f
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        layoutParams = android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(8) }
     }
     root.addView(adLabel)
 
@@ -513,6 +503,10 @@ private fun NativeAdCard(adUnitId: String, modifier: Modifier = Modifier) {
                     Log.w("SpeechNova", "Native ad failed to load: ${error.message}")
                 }
             })
+            // A native ad whose video starts talking over the user is an ad
+            // that interferes with app use. Video in this card always starts
+            // muted; the ad's own control is the only way to turn sound on.
+            .withNativeAdOptions(AdPolicy.nativeAdOptions())
             .build()
         adLoader.loadAd(AdPolicy.request())
 
@@ -829,18 +823,12 @@ fun SpeechNovaApp() {
     var practiceResult by remember { mutableStateOf<PracticeResult?>(null) }
     var practiceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
-    // FACE-TO-FACE (continuous conversation, gated behind a rewarded ad)
-    var faceToFaceUnlockedUntil by remember { mutableLongStateOf(0L) }
-    var rewardedAd by remember { mutableStateOf<RewardedAd?>(null) }
-    var rewardedLoading by remember { mutableStateOf(false) }
+    // FACE-TO-FACE (continuous conversation — free, no ad gate)
     var topBubble by remember { mutableStateOf("") }
     var bottomBubble by remember { mutableStateOf("") }
     var isFaceListening by remember { mutableStateOf(false) }
     var micLevel by remember { mutableFloatStateOf(0f) }
     var face2faceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
-    // Ticks once a second so the unlock countdown re-renders and expiry is noticed.
-    var nowTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val faceUnlocked = faceToFaceUnlockedUntil > nowTick
 
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
@@ -1281,7 +1269,6 @@ fun SpeechNovaApp() {
     // Should we keep the continuous loop alive right now?
     fun shouldFaceListen(): Boolean =
         currentScreen == Screen.FACE2FACE &&
-                faceToFaceUnlockedUntil > System.currentTimeMillis() &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
 
@@ -1379,59 +1366,6 @@ fun SpeechNovaApp() {
         } catch (_: Exception) {
             isFaceListening = false
             reArm(800)
-        }
-    }
-
-    // ── REWARDED AD (gate for Face-to-Face) ──
-    fun loadRewardedAd() {
-        if (rewardedLoading || rewardedAd != null) return
-        rewardedLoading = true
-        RewardedAd.load(
-            context,
-            AD_UNIT_REWARDED,
-            AdPolicy.request(),
-            object : RewardedAdLoadCallback() {
-                override fun onAdLoaded(ad: RewardedAd) {
-                    rewardedAd = ad
-                    rewardedLoading = false
-                    Log.i("SpeechNova", "Rewarded ad loaded")
-                }
-
-                override fun onAdFailedToLoad(error: LoadAdError) {
-                    rewardedAd = null
-                    rewardedLoading = false
-                    Log.w("SpeechNova", "Rewarded ad failed: ${error.message}")
-                }
-            }
-        )
-    }
-
-    fun showRewardedAd() {
-        val activity = context.findActivity()
-        val ad = rewardedAd
-        if (activity == null || ad == null) {
-            status = "⏳ Ad not ready yet — please try again in a moment"
-            loadRewardedAd()
-            return
-        }
-        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-            override fun onAdDismissedFullScreenContent() {
-                rewardedAd = null
-                loadRewardedAd() // preload the next one
-            }
-
-            override fun onAdFailedToShowFullScreenContent(adError: AdError) {
-                rewardedAd = null
-                status = "❌ Couldn't show the ad — try again"
-                loadRewardedAd()
-            }
-        }
-        ad.show(activity) { _ ->
-            // Reward earned → unlock (or extend) Face-to-Face for 20 minutes.
-            val base = maxOf(faceToFaceUnlockedUntil, System.currentTimeMillis())
-            faceToFaceUnlockedUntil = base + FACE_UNLOCK_MS
-            nowTick = System.currentTimeMillis()
-            status = "✅ Face-to-Face unlocked for 20 minutes"
         }
     }
 
@@ -1861,22 +1795,12 @@ fun SpeechNovaApp() {
             permLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
         downloadModel(fromLang, toLang)
-        loadRewardedAd()
         showHelp = true // first thing a beginner sees: how to use the app
     }
 
-    // Second-resolution ticker so the Face-to-Face unlock countdown updates
-    // and expiry is detected promptly.
-    LaunchedEffect(Unit) {
-        while (true) {
-            nowTick = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
-
-    // Drive the continuous Face-to-Face loop from screen + unlock state.
-    LaunchedEffect(currentScreen, faceUnlocked) {
-        if (currentScreen == Screen.FACE2FACE && faceUnlocked && hasMicPermission()) {
+    // Drive the continuous Face-to-Face loop from the current screen.
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == Screen.FACE2FACE && hasMicPermission()) {
             topBubble = ""
             bottomBubble = ""
             startFaceToFaceListening()
@@ -2025,15 +1949,10 @@ fun SpeechNovaApp() {
                 Screen.FACE2FACE -> FaceToFaceScreenContent(
                     fromLang = fromLang,
                     toLang = toLang,
-                    unlocked = faceUnlocked,
-                    remainingMs = (faceToFaceUnlockedUntil - nowTick).coerceAtLeast(0L),
-                    rewardedReady = rewardedAd != null,
                     topBubble = topBubble,
                     bottomBubble = bottomBubble,
                     isListening = isFaceListening,
                     micLevel = micLevel,
-                    onWatchAd = { showRewardedAd() },
-                    onCancel = { currentScreen = Screen.HOME },
                     onSwapLangs = {
                         val f = fromLang; fromLang = toLang; toLang = f
                         learnLang = toLang
@@ -2045,22 +1964,42 @@ fun SpeechNovaApp() {
             }
         }
 
-        // ── Banner ad (all screens), just above the navigation bar ──
+        // ── Banner ad (all screens), above the navigation bar ──
+        // It used to sit flush against the nav bar, so a thumb aimed at a tab
+        // and landing slightly high hit the ad. It is now labelled and held
+        // clear of both the content above and the tabs below, so no tap
+        // intended for a control can land on it by accident.
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = Color(0xFF0b1220),
             shadowElevation = 6.dp
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxWidth(),
-                factory = { ctx ->
-                    AdView(ctx).apply {
-                        setAdSize(AdSize.BANNER)
-                        adUnitId = AD_UNIT_BANNER
-                        loadAd(AdPolicy.request())
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Deliberately generous below the ad: this dead space is
+                    // what a tap aimed at a nav tab but landing high hits.
+                    .padding(top = 10.dp, bottom = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "ADVERTISEMENT",
+                    color = Color(0xFF94a3b8),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(6.dp))
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth(),
+                    factory = { ctx ->
+                        AdView(ctx).apply {
+                            setAdSize(AdSize.BANNER)
+                            adUnitId = AD_UNIT_BANNER
+                            loadAd(AdPolicy.request())
+                        }
                     }
-                }
-            )
+                )
+            }
         }
 
         // ── Bottom navigation ──
@@ -2069,9 +2008,6 @@ fun SpeechNovaApp() {
             if (target != Screen.FACE2FACE) stopFaceToFaceListening()
             if (target != Screen.LEARN) stopPractice()
             if (target != Screen.HOME && isRecording) stopRecording()
-            if (target == Screen.FACE2FACE && !faceUnlocked) {
-                loadRewardedAd() // make sure an ad is ready for the gate
-            }
             currentScreen = target
         }
     }
@@ -2304,7 +2240,7 @@ fun SpeechNovaApp() {
                         HelpStep("5", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that it works even offline.")
                         HelpStep("6", "Learn the letters", "Open 📚 Learn to see the alphabet of your language. Tap any letter to hear how it sounds.")
                         HelpStep("7", "No mic needed", "Tap 📖 Phrases for ready-made travel sentences you can use without speaking at all.")
-                        HelpStep("8", "Talking in person?", "Open 🎭 Face-to-Face, watch a short ad to unlock 20 minutes, then just talk — it listens and translates continuously.")
+                        HelpStep("8", "Talking in person?", "Open 🎭 Face-to-Face, lay the phone flat between you, then just talk — it listens and translates continuously, with no buttons to press.")
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -2887,26 +2823,38 @@ private fun LearnScreenContent(
 
         Spacer(Modifier.height(12.dp))
 
-        // Dismissible native ad
+        // Dismissible native ad.
+        // The close button used to sit *on top of* the ad's top-right corner
+        // at 26dp. A child aiming for it and missing landed on the ad instead
+        // — exactly the inadvertent click the Families rules prohibit. It now
+        // lives in its own row above the ad, well clear of anything clickable,
+        // at a full 48dp touch target.
         if (!adDismissed) {
-            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                NativeAdCard(
-                    adUnitId = AD_UNIT_NATIVE,
-                    modifier = Modifier.fillMaxWidth()
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 IconButton(
                     onClick = onDismissAd,
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(4.dp)
-                        .size(26.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.45f))
+                        .background(Color(0xFF334155))
                 ) {
-                    Text("✕", color = Color.White, fontSize = 13.sp)
+                    Text("✕", color = Color.White, fontSize = 16.sp)
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(6.dp))
+            NativeAdCard(
+                adUnitId = AD_UNIT_NATIVE,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            )
+            Spacer(Modifier.height(20.dp))
         }
 
         if (script == null) {
@@ -3198,100 +3146,20 @@ private fun PhrasesScreenContent(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// SCREEN: FACE-TO-FACE (continuous conversation, rewarded-ad gated)
+// SCREEN: FACE-TO-FACE (continuous conversation — open to everyone)
 // ══════════════════════════════════════════════════════════════════════════
 @Composable
 private fun FaceToFaceScreenContent(
     fromLang: String,
     toLang: String,
-    unlocked: Boolean,
-    remainingMs: Long,
-    rewardedReady: Boolean,
     topBubble: String,
     bottomBubble: String,
     isListening: Boolean,
     micLevel: Float,
-    onWatchAd: () -> Unit,
-    onCancel: () -> Unit,
     onSwapLangs: () -> Unit
 ) {
-    if (!unlocked) {
-        // ── Rewarded gate ──
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text("🎭", fontSize = 60.sp)
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Face-to-Face conversation",
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Lay the phone flat between you and the other person. It listens and translates continuously — no button pressing.",
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-                lineHeight = 20.sp
-            )
-            Spacer(Modifier.height(28.dp))
-            Surface(
-                color = Color(0xFF1e293b),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        "Watch a short ad to unlock Face-to-Face for 20 minutes",
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        lineHeight = 20.sp
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = onWatchAd,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10b981))
-                    ) {
-                        Text(
-                            if (rewardedReady) "▶  Watch Ad & Unlock" else "⏳ Loading ad…",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
-                        Text("Cancel", color = Color.White.copy(alpha = 0.7f))
-                    }
-                }
-            }
-        }
-        return
-    }
-
-    // ── Unlocked: continuous conversation UI ──
-    val totalSeconds = (remainingMs / 1000L).toInt()
-    val mm = totalSeconds / 60
-    val ss = totalSeconds % 60
-    val timeLabel = "%d:%02d".format(mm, ss)
-
     Column(modifier = Modifier.fillMaxSize()) {
-        // Remaining-time chip
+        // Title row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3302,7 +3170,7 @@ private fun FaceToFaceScreenContent(
             Text("🎭 Face-to-Face", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Surface(color = Color(0xFF334155), shape = RoundedCornerShape(20.dp)) {
                 Text(
-                    "⏱ $timeLabel left",
+                    "Lay the phone flat between you",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,

@@ -12,10 +12,11 @@ android {
         applicationId = "com.parashmani.speechnova"
         minSdk = 26
         targetSdk = 36
-        // 7 was rejected by Play for ad content inconsistent with the content
-        // rating; a rejected version code can never be re-uploaded.
-        versionCode = 8
-        versionName = "1.5.1"
+        // 7 was rejected for ad content inconsistent with the content rating,
+        // 8 for a Families ad-format violation (the rewarded ad). A rejected
+        // version code can never be re-uploaded.
+        versionCode = 9
+        versionName = "1.5.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -62,8 +63,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // AdMob
-    implementation("com.google.android.gms:play-services-ads:23.0.0")
+    // AdMob. Play's notice asks for a version listed in the Families
+    // Self-Certified Ads SDKs programme; that list sets a *minimum* version,
+    // so this is kept well ahead of the 23.0.0 the rejected builds shipped.
+    // Check the current minimum on the programme page before each release.
+    implementation("com.google.android.gms:play-services-ads:23.6.0")
 
     // MLKit Translation
     implementation("com.google.mlkit:translate:17.0.3")

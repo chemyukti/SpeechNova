@@ -13,18 +13,31 @@ import android.content.Context
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.RequestConfiguration
+import com.google.android.gms.ads.VideoOptions
+import com.google.android.gms.ads.nativead.NativeAdOptions
 
 /**
  * Single place where the rules for *what kind of ads SpeechNova is allowed to
  * show* are declared.
  *
- * Google Play rejected version code 7 with "the ad content in your app is not
- * consistent with the app's content rating". By default the Mobile Ads SDK will
- * serve anything up to a mature (MA) rating, which is wildly out of line with
- * a general-audience translation app — so the app has to say out loud that it
- * only wants general-audience ads. That declaration is global, it has to be set
- * *before* the SDK is initialized, and it then applies to every banner, native
- * and rewarded request the app makes.
+ * Google Play rejected two builds in a row here:
+ *
+ *  - version code 7, for ad *content* inconsistent with the content rating.
+ *    By default the Mobile Ads SDK serves anything up to a mature (MA)
+ *    rating, which is wildly out of line with a general-audience translation
+ *    app, so the app has to say out loud that it only wants G-rated ads.
+ *  - version code 8, for an ad *format* violation under the Families rules:
+ *    the rewarded ad that gated Face-to-Face could not be closed within five
+ *    seconds and blocked a feature until it was watched. That ad is gone —
+ *    the app now ships banner and native formats only, both dismissible and
+ *    neither able to block anything.
+ *
+ * The second rejection also settled a question the first one left open: the
+ * Families rules only apply to apps whose declared audience includes children,
+ * so this app's does. [TARGETS_CHILDREN] is `true` accordingly.
+ *
+ * The declaration is global, has to be set *before* the SDK is initialized,
+ * and then applies to every request the app makes.
  *
  * Note that the code side is only half of the fix: sensitive ad categories are
  * blocked publisher-side in the AdMob console. See PLAY_POLICY.md for the
@@ -36,17 +49,18 @@ object AdPolicy {
      * Whether the Play Store listing declares an audience that includes
      * children (under 13, or the local equivalent).
      *
-     * SpeechNova is a general-audience translation tool, so this is `false`:
-     * we tell the SDK explicitly that the app is *not* child-directed rather
-     * than leaving it unspecified, because "unspecified" leaves the decision
-     * to the ad network.
+     * This is `true`: Play reviewed the app against the *Families* Ad Format
+     * Requirements, which only apply to apps whose target audience includes
+     * children — so the listing declares one, and the SDK has to be told.
+     * Setting it puts the SDK into child-directed mode: no personalized ads,
+     * no remarketing, no advertising-ID based targeting.
      *
-     * If the Play Console target-audience answers ever change to include
-     * children, flip this to `true` — that switches the SDK into
-     * child-directed mode (no personalized ads, no remarketing), which is
-     * what the Families Policy Requirements demand.
+     * Keep this in step with the target-audience answers in
+     * Play Console → Policy → App content. If the listing is ever narrowed to
+     * adults only, this becomes `false` *and* the `AD_ID` permission removal
+     * in AndroidManifest.xml should be reconsidered at the same time.
      */
-    private const val TARGETS_CHILDREN = false
+    private const val TARGETS_CHILDREN = true
 
     /**
      * Applies the content restrictions and then starts the Mobile Ads SDK.
@@ -65,6 +79,16 @@ object AdPolicy {
      * skip the policy above.
      */
     fun request(): AdRequest = AdRequest.Builder().build()
+
+    /**
+     * Options for the native ad card. Video creatives start muted: an ad that
+     * begins playing sound on its own interferes with the app, which is one
+     * of the things the Families ad-format rules forbid.
+     */
+    fun nativeAdOptions(): NativeAdOptions =
+        NativeAdOptions.Builder()
+            .setVideoOptions(VideoOptions.Builder().setStartMuted(true).build())
+            .build()
 
     private fun buildRequestConfiguration(): RequestConfiguration =
         RequestConfiguration.Builder()

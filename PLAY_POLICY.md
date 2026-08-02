@@ -1,66 +1,80 @@
-# Play Console — resolving the "Ad Content" rejection
+# Play Console — ads compliance for SpeechNova
 
-Google Play rejected **version code 7** with:
+Two rejections in a row, both about ads:
 
-> The ad content in your app is not consistent with the app's content rating.
+| Version code | Issue | Cause |
+| --- | --- | --- |
+| 7 | Ad Content — inconsistent with the app's content rating | SDK was free to serve up to a mature (MA) rating |
+| 8 | Families Ad Format Requirements — unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
 
-By default the Google Mobile Ads SDK will serve ads up to a **mature (MA)**
-rating. SpeechNova is a general-audience translation tool, so the ads it was
-showing could be rated far above the app itself — that mismatch is the
-violation.
+The second notice is the important one: the **Families Policy Requirements
+apply to this app**, which means its Play listing declares an audience that
+includes children. That is a much stricter regime than the content-rating fix
+alone assumed.
 
-The fix has a code half and a console half. Both are needed; shipping only one
-will get the next build rejected the same way.
+## What the Families rules forbid, and what this app now does
+
+| Rule | Status |
+| --- | --- |
+| No full-screen ad that can't be closed within 5 seconds | **Rewarded ad removed entirely** — it is unclosable for its full run by design |
+| Ads must not interfere with app use | Face-to-Face is no longer gated behind an ad; nothing in the app is |
+| G-rated ad content only | `setMaxAdContentRating(MAX_AD_CONTENT_RATING_G)` |
+| No behavioural targeting / remarketing to children | `setTagForChildDirectedTreatment(...TRUE)` |
+| No advertising ID transmitted | `AD_ID` permission removed in the manifest |
+| Ads must be clearly distinguishable from app content | Prominent "ADVERTISEMENT" label on both banner and native card |
+| No design that produces inadvertent clicks | Close button moved off the ad and enlarged to 48dp; banner separated from the nav bar |
+| Ads must not start sound on their own | Native video creatives start muted |
+| Certified ads SDK | Google Mobile Ads, bumped 23.0.0 → 23.6.0 |
 
 ## Code side — done in this branch
 
-`app/src/main/java/com/parashmani/speechnova/AdPolicy.kt` declares the policy
-and starts the SDK:
+`app/src/main/java/com/parashmani/speechnova/AdPolicy.kt` is the single place
+the policy is declared, applied before `MobileAds.initialize` (a configuration
+set afterwards does not affect requests already in flight). Every remaining ad
+request is built through `AdPolicy.request()` so none can bypass it.
 
-- `setMaxAdContentRating(MAX_AD_CONTENT_RATING_G)` — only general-audience ads
-  are eligible to serve. This is the setting that directly answers the
-  rejection.
-- `setTagForChildDirectedTreatment(...FALSE)` — SpeechNova's Play listing does
-  not declare children as a target audience, so the app says so explicitly
-  rather than leaving it for the ad network to guess. If the target-audience
-  answers in the console ever change to include under-13 users, flip
-  `AdPolicy.TARGETS_CHILDREN` to `true`.
-- `setTagForUnderAgeOfConsent(...UNSPECIFIED)` — Google's guidance is that this
-  and the child-directed tag must never both be true.
+`AdPolicy.TARGETS_CHILDREN` is `true` and must stay in step with the
+target-audience answers in Play Console → Policy → App content. If the listing
+is ever narrowed to adults only, revisit the `AD_ID` removal at the same time.
 
-The configuration is applied **before** `MobileAds.initialize`, because a
-request configuration set afterwards does not affect requests already in
-flight. Every banner, native and rewarded request in the app is built through
-`AdPolicy.request()` so none of them can bypass it.
-
-`versionCode` is bumped to **8** — a rejected version code can never be
-re-uploaded.
+`versionCode` is **9** — 7 and 8 are both burnt and can never be re-uploaded.
 
 ## Console side — must be done by hand before resubmitting
 
-These live in the AdMob and Play consoles and cannot be set from code:
+None of this can be set from code:
 
-1. **AdMob → Blocking controls → Sensitive categories.** Block the categories
-   that are inconsistent with the app's rating, in particular:
-   gambling/betting, alcohol, tobacco, dating, sexually suggestive content,
-   weapons, "get rich quick" schemes, and drugs/supplements.
-   Apply this per app *and* at the account level, so new ad units inherit it.
-2. **AdMob → Blocking controls → Ad content rating.** Set the account/app
-   maximum to **G** so the server-side ceiling matches the SDK request.
-3. **Play Console → Policy → App content → Ads.** Confirm the app is declared
+1. **AdMob → Apps → SpeechNova → Ad units.** **Delete or pause the rewarded ad
+   unit** (`ca-app-pub-8499432704301966/2705659156`). The app no longer
+   requests it; leaving it live invites the same finding again.
+2. **AdMob → Blocking controls → Sensitive categories.** Block the categories
+   inconsistent with a children's audience — gambling/betting, alcohol,
+   tobacco, dating, sexually suggestive content, weapons, drugs/supplements,
+   "get rich quick" schemes. Set this at account level so new ad units inherit
+   it.
+3. **AdMob → Blocking controls → Ad content rating.** Set the account/app
+   ceiling to **G**, matching what the SDK requests.
+4. **AdMob → App settings → "Child-directed treatment" / "Ad content for
+   families".** Mark the app as child-directed so serving is restricted
+   server-side too, not only per request.
+5. **Families Self-Certified Ads SDKs list.** Confirm the bundled Google Mobile
+   Ads version is at or above the current listed minimum. The list sets a
+   floor that moves over time — check it per release rather than assuming.
+6. **Play Console → Policy → App content → Target audience and content.**
+   Confirm the declared audience matches `TARGETS_CHILDREN = true`.
+7. **Play Console → Policy → App content → Ads.** Confirm the app is declared
    as containing ads.
-4. **Play Console → Policy → App content → Target audience and content.**
-   Make sure the declared target audience matches `AdPolicy.TARGETS_CHILDREN`.
-   If children are included, the app enters the Families programme and the
-   stricter Families ad rules apply.
-5. **Retake the content rating questionnaire** if any answer no longer matches
-   the app — Play's notice offers this as the alternative route to
-   consistency.
+8. **Retake the content rating questionnaire** if any answer no longer matches
+   the app.
 
-## Verifying before you upload
+## Verifying before upload
 
-- Ad inspector (shake the device with a debug build, or
-  `MobileAds.openAdInspector`) shows the request configuration that was
-  actually applied — check that the max content rating reads `G`.
-- Give the AdMob blocking-control changes a few hours to propagate before
+- Ad inspector (`MobileAds.openAdInspector`, or shake a debug build) shows the
+  request configuration that actually applied — confirm max content rating
+  reads `G` and child-directed reads true.
+- Confirm `AD_ID` is absent from the merged manifest:
+  `./gradlew :app:processReleaseManifest` then grep
+  `app/build/intermediates/merged_manifest/release/AndroidManifest.xml`.
+- Walk every screen and confirm nothing full-screen ever appears, and that
+  Face-to-Face opens straight into the conversation UI with no gate.
+- Give AdMob blocking-control changes a few hours to propagate before
   spot-checking live ads.
