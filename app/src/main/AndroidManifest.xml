@@ -8,6 +8,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- The ads SDK merges in the advertising-ID permission by default. An app
+         whose target audience includes children must not transmit the
+         advertising ID, so it is removed here. Ads still serve; they are
+         non-personalised, which is what the Families rules require anyway. -->
+    <uses-permission
+        android:name="com.google.android.gms.permission.AD_ID"
+        tools:node="remove" />
+
     <!-- Fix: Ensure the app is available on devices without a hardware microphone -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- Camera scan (OCR) is an optional feature, not required to install -->
