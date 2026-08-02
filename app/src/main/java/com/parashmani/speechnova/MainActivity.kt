@@ -28,6 +28,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -108,6 +109,52 @@ private const val APP_PACKAGE = "com.parashmani.speechnova"
 // there is no rewarded unit here and no gate for one to sit behind.
 private const val AD_UNIT_BANNER = "ca-app-pub-8499432704301966/9196802502"
 private const val AD_UNIT_NATIVE = "ca-app-pub-8499432704301966/9457225173"
+
+// ── Face-to-Face echo control ──────────────────────────────────────────────
+// Face-to-Face speaks the translation out of the same phone that is listening
+// for the next sentence. Left alone, the recognizer hears the phone's own
+// voice, translates that, speaks the result, hears itself again — a loop the
+// two humans can't get a word into. Three things break it: the mic is never
+// live while the phone is talking, a short guard covers the speaker's tail,
+// and anything that comes back sounding like what we just said is discarded.
+
+/** Utterance ID marking a Face-to-Face reply, so the progress listener can
+ *  tell the conversational voice from everything else the app speaks. */
+private const val FACE_UTTERANCE_ID = "face2face"
+
+/** Silence after the phone stops talking before the mic is trusted again —
+ *  long enough for the speaker's tail and the room's echo to die away. */
+private const val FACE_ECHO_GUARD_MS = 400L
+
+/** How often the re-arm loop re-checks whether the phone has finished. */
+private const val FACE_SPEAK_POLL_MS = 200L
+
+/** Fallback ceiling on how long a reply is assumed to take, in case the TTS
+ *  engine never reports that it finished. Without it a missed callback would
+ *  leave the mic switched off for the rest of the conversation. */
+private fun faceSpeechWatchdogMs(text: String): Long =
+    (text.length * 150L + 4000L).coerceAtMost(60_000L)
+
+/** Strips case, punctuation and spacing so a heard sentence can be compared
+ *  with what the phone just said without tripping over formatting. */
+private fun normalizeForEchoCheck(text: String): String =
+    text.lowercase().filter { it.isLetterOrDigit() }
+
+/** True when [heard] looks like the phone's own [spoken] reply coming back.
+ *  Recognition of an echo is rarely word-perfect, so containment either way
+ *  counts — but only for text long enough that the match means something. */
+private fun soundsLikeOurOwnVoice(heard: String, spoken: String): Boolean {
+    if (spoken.isBlank()) return false
+    val h = normalizeForEchoCheck(heard)
+    val s = normalizeForEchoCheck(spoken)
+    if (h.isEmpty() || s.isEmpty()) return false
+    if (h == s) return true
+    // A three-character overlap would match half the language; require enough
+    // substance that a real reply from the other person can't trip it.
+    val shorter = minOf(h.length, s.length)
+    if (shorter < 8) return false
+    return h.contains(s) || s.contains(h)
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -827,6 +874,17 @@ fun SpeechNovaApp() {
     var topBubble by remember { mutableStateOf("") }
     var bottomBubble by remember { mutableStateOf("") }
     var isFaceListening by remember { mutableStateOf(false) }
+    // True from the moment a heard sentence goes off to be translated until
+    // the spoken reply has finished and the echo guard has elapsed. The mic
+    // stays shut for that whole window — covering the translation too, so a
+    // slow translation can't let the mic open just in time to hear the reply.
+    var isFaceReplying by remember { mutableStateOf(false) }
+    // The last thing the phone said out loud, kept so it can be recognised
+    // and discarded if the mic picks it up anyway.
+    var lastFaceReply by remember { mutableStateOf("") }
+    // Counts replies, so a timer belonging to an earlier one can't unlatch the
+    // mic in the middle of a later one.
+    var faceReplySeq by remember { mutableIntStateOf(0) }
     var micLevel by remember { mutableFloatStateOf(0f) }
     var face2faceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
@@ -1277,10 +1335,24 @@ fun SpeechNovaApp() {
         micLevel = 0f
         face2faceRecognizer?.destroy()
         face2faceRecognizer = null
+        // Leaving the screen mid-sentence shouldn't leave the phone talking to
+        // an empty room, and the reply state must not stay latched or the loop
+        // would refuse to listen when we come back. Only our own reply is cut
+        // short — the Home screen speaks through the same engine and must not
+        // be silenced by someone switching tabs.
+        if (isFaceReplying) {
+            tts?.stop()
+            isFaceReplying = false
+        }
+        faceReplySeq++
+        lastFaceReply = ""
     }
 
     fun startFaceToFaceListening() {
         if (!shouldFaceListen()) { stopFaceToFaceListening(); return }
+        // Never open the mic while the phone is mid-reply — this is the guard
+        // that stops the app hearing and re-translating its own voice.
+        if (isFaceReplying) return
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             status = "❌ Speech recognition not available"
             return
@@ -1290,10 +1362,16 @@ fun SpeechNovaApp() {
         face2faceRecognizer = sr
         isFaceListening = true
 
-        // Re-arm the continuous loop (recursively) unless we've left the screen.
+        // Re-arm the continuous loop (recursively) unless we've left the
+        // screen. While the phone is replying this waits rather than giving
+        // up, so the conversation resumes the moment it stops talking.
         fun reArm(delayMs: Long) {
             handler.postDelayed({
-                if (shouldFaceListen()) startFaceToFaceListening() else stopFaceToFaceListening()
+                when {
+                    !shouldFaceListen() -> stopFaceToFaceListening()
+                    isFaceReplying -> reArm(FACE_SPEAK_POLL_MS)
+                    else -> startFaceToFaceListening()
+                }
             }, delayMs)
         }
 
@@ -1327,17 +1405,48 @@ fun SpeechNovaApp() {
                 sr.destroy()
                 if (face2faceRecognizer === sr) face2faceRecognizer = null
 
+                // Did we just hear ourselves? The mic is shut while the phone
+                // talks, but a loud speaker in a small room can still bleed
+                // into the tail of a recognition that was already running.
+                if (!text.isNullOrBlank() && soundsLikeOurOwnVoice(text, lastFaceReply)) {
+                    Log.i("SpeechNova", "Face-to-Face: ignored our own voice echoing back")
+                    reArm(FACE_ECHO_GUARD_MS)
+                    return
+                }
+
                 if (!text.isNullOrBlank()) {
                     bottomBubble = text
-                    mlTranslator?.translate(text)
+                    // Latch *before* translating: a slow translation must not
+                    // leave a window where the mic reopens just in time to
+                    // hear the reply it is about to produce.
+                    isFaceReplying = true
+                    faceReplySeq++
+                    val replySeq = faceReplySeq
+                    val translator = mlTranslator
+                    // No translator configured — don't latch the mic shut.
+                    if (translator == null) isFaceReplying = false
+                    translator?.translate(text)
                         ?.addOnSuccessListener { translated ->
                             var t = translated.trim()
                             if (!t.endsWith(".") && !t.endsWith("?") && !t.endsWith("!")) t += "."
                             topBubble = t
+                            lastFaceReply = t
                             selectVoice(toLang)
-                            tts?.speak(t, TextToSpeech.QUEUE_FLUSH, null, null)
+                            tts?.speak(t, TextToSpeech.QUEUE_FLUSH, null, FACE_UTTERANCE_ID)
+                            // If the engine never reports that it finished,
+                            // release the mic anyway rather than going deaf —
+                            // but only if this is still the reply in progress.
+                            handler.postDelayed({
+                                if (isFaceReplying && faceReplySeq == replySeq) {
+                                    Log.w("SpeechNova", "Face-to-Face: TTS never reported done")
+                                    isFaceReplying = false
+                                }
+                            }, faceSpeechWatchdogMs(t))
                         }
-                        ?.addOnFailureListener { status = "❌ Translation failed" }
+                        ?.addOnFailureListener {
+                            status = "❌ Translation failed"
+                            if (faceReplySeq == replySeq) isFaceReplying = false
+                        }
                 }
                 reArm(600)
             }
@@ -1345,7 +1454,10 @@ fun SpeechNovaApp() {
             override fun onPartialResults(partial: Bundle?) {
                 val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()
-                if (!t.isNullOrBlank()) bottomBubble = t
+                // Don't echo our own reply back into the speaker's bubble.
+                if (!t.isNullOrBlank() && !soundsLikeOurOwnVoice(t, lastFaceReply)) {
+                    bottomBubble = t
+                }
             }
 
             override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -1582,15 +1694,32 @@ fun SpeechNovaApp() {
                         isSpeaking = true
                         tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, null, null)
 
+                        // Continuous mode re-opens the mic after the reply. The
+                        // duration here is only an estimate, and reopening
+                        // early means the phone hears itself and translates
+                        // its own voice — so if the engine says it is still
+                        // speaking, wait and ask again instead of guessing.
                         val speechDuration = textWithPauses.length * 120L
 
-                        handler.postDelayed({
+                        // Bounded so a stuck engine can't leave the mic off
+                        // for the rest of the session.
+                        fun resumeListeningWhenQuiet(attemptsLeft: Int) {
+                            if (attemptsLeft > 0 && tts?.isSpeaking == true) {
+                                handler.postDelayed(
+                                    { resumeListeningWhenQuiet(attemptsLeft - 1) }, 200L
+                                )
+                                return
+                            }
                             isSpeaking = false
                             if (isRecording && !recordingMode) {
                                 status = "🎤 Listening..."
                                 startRecognizer(fromLang, toLang)
                             }
-                        }, speechDuration + 500)
+                        }
+
+                        handler.postDelayed(
+                            { resumeListeningWhenQuiet(150) }, speechDuration + 500
+                        )
                     }
                     ?.addOnFailureListener { e ->
                         Log.e("SpeechNova", "Translation failed: ${e.message}")
@@ -1784,12 +1913,47 @@ fun SpeechNovaApp() {
         }
     }
 
+    // The phone has finished (or given up on) speaking a Face-to-Face reply.
+    // The mic stays shut for a moment longer so the speaker's tail and the
+    // room's echo aren't heard as the next sentence.
+    fun onFaceReplyFinished(utteranceId: String?) {
+        if (utteranceId != FACE_UTTERANCE_ID) return
+        // If a newer reply starts during the guard, leave the mic shut for it.
+        val finishedSeq = faceReplySeq
+        handler.postDelayed({
+            if (faceReplySeq == finishedSeq) isFaceReplying = false
+        }, FACE_ECHO_GUARD_MS)
+    }
+
     LaunchedEffect(Unit) {
         tts = TextToSpeech(context) { st ->
             if (st == TextToSpeech.SUCCESS) {
                 Log.i("SpeechNova", "TTS initialized successfully")
             }
         }
+
+        // Callbacks arrive on a binder thread, so every one of these hops back
+        // to the main thread before touching state.
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+
+            override fun onDone(utteranceId: String?) {
+                handler.post { onFaceReplyFinished(utteranceId) }
+            }
+
+            @Deprecated("Required by UtteranceProgressListener; superseded by onError(String, Int)")
+            override fun onError(utteranceId: String?) {
+                handler.post { onFaceReplyFinished(utteranceId) }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                handler.post { onFaceReplyFinished(utteranceId) }
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                handler.post { onFaceReplyFinished(utteranceId) }
+            }
+        })
 
         if (!hasMicPermission()) {
             permLauncher.launch(Manifest.permission.RECORD_AUDIO)
