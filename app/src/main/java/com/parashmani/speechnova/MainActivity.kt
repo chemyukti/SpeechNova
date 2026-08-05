@@ -714,7 +714,8 @@ private fun HelpSection(title: String) {
 private fun pickBestVoice(
     voices: Set<android.speech.tts.Voice>?,
     locale: Locale,
-    preferFemale: Boolean
+    preferFemale: Boolean,
+    allowNetworkVoices: Boolean
 ): android.speech.tts.Voice? {
     if (voices.isNullOrEmpty()) return null
 
@@ -734,7 +735,11 @@ private fun pickBestVoice(
         vl.language.equals(locale.language, ignoreCase = true) &&
                 // A voice the user hasn't downloaded will silently fail.
                 !voice.features.orEmpty()
-                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) &&
+                // With no network, a voice that needs one can't say anything at
+                // all — however natural it sounds when there is one. Dropping
+                // it here is what keeps the app speaking offline.
+                (allowNetworkVoices || !voice.isNetworkConnectionRequired)
     }
     if (candidates.isEmpty()) return null
 
@@ -753,11 +758,12 @@ private fun pickBestVoice(
         }
             // Same country beats a different accent of the same language.
             .thenBy { if (it.locale.country.equals(locale.country, true)) 1 else 0 }
+            // Prefer a voice that keeps working when the network drops mid
+            // conversation, ahead of raw quality — this app is offline-first.
+            .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 }
             // QUALITY_VERY_HIGH (500) down to QUALITY_VERY_LOW (100) — this is
             // what actually decides whether it sounds human.
             .thenBy { it.quality }
-            // A tie on everything else: prefer one that works offline.
-            .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 }
     )
 }
 
@@ -1073,7 +1079,36 @@ fun SpeechNovaApp(
         "Marathi" to TranslateLanguage.MARATHI,
         "Gujarati" to TranslateLanguage.GUJARATI,
         "Kannada" to TranslateLanguage.KANNADA,
-        "Urdu" to TranslateLanguage.URDU
+        "Urdu" to TranslateLanguage.URDU,
+        // Every language below is one ML Kit can actually translate offline.
+        // Malayalam, Punjabi, Odia, Assamese and Nepali are deliberately absent
+        // — ML Kit ships no model for them, and offering a language the app
+        // cannot translate would be worse than not listing it.
+        "Indonesian" to TranslateLanguage.INDONESIAN,
+        "Malay" to TranslateLanguage.MALAY,
+        "Thai" to TranslateLanguage.THAI,
+        "Vietnamese" to TranslateLanguage.VIETNAMESE,
+        "Turkish" to TranslateLanguage.TURKISH,
+        "Persian" to TranslateLanguage.PERSIAN,
+        "Hebrew" to TranslateLanguage.HEBREW,
+        "Dutch" to TranslateLanguage.DUTCH,
+        "Polish" to TranslateLanguage.POLISH,
+        "Ukrainian" to TranslateLanguage.UKRAINIAN,
+        "Greek" to TranslateLanguage.GREEK,
+        "Swedish" to TranslateLanguage.SWEDISH,
+        "Danish" to TranslateLanguage.DANISH,
+        "Norwegian" to TranslateLanguage.NORWEGIAN,
+        "Finnish" to TranslateLanguage.FINNISH,
+        "Czech" to TranslateLanguage.CZECH,
+        "Romanian" to TranslateLanguage.ROMANIAN,
+        "Hungarian" to TranslateLanguage.HUNGARIAN,
+        "Swahili" to TranslateLanguage.SWAHILI,
+        "Filipino" to TranslateLanguage.TAGALOG,
+        "Afrikaans" to TranslateLanguage.AFRIKAANS,
+        "Croatian" to TranslateLanguage.CROATIAN,
+        "Bulgarian" to TranslateLanguage.BULGARIAN,
+        "Slovak" to TranslateLanguage.SLOVAK,
+        "Catalan" to TranslateLanguage.CATALAN
     )
 
     val langToSTT = mapOf(
@@ -1095,7 +1130,32 @@ fun SpeechNovaApp(
         "Marathi" to "mr-IN",
         "Gujarati" to "gu-IN",
         "Kannada" to "kn-IN",
-        "Urdu" to "ur-PK"
+        "Urdu" to "ur-PK",
+        "Indonesian" to "id-ID",
+        "Malay" to "ms-MY",
+        "Thai" to "th-TH",
+        "Vietnamese" to "vi-VN",
+        "Turkish" to "tr-TR",
+        "Persian" to "fa-IR",
+        "Hebrew" to "iw-IL",
+        "Dutch" to "nl-NL",
+        "Polish" to "pl-PL",
+        "Ukrainian" to "uk-UA",
+        "Greek" to "el-GR",
+        "Swedish" to "sv-SE",
+        "Danish" to "da-DK",
+        "Norwegian" to "nb-NO",
+        "Finnish" to "fi-FI",
+        "Czech" to "cs-CZ",
+        "Romanian" to "ro-RO",
+        "Hungarian" to "hu-HU",
+        "Swahili" to "sw-KE",
+        "Filipino" to "fil-PH",
+        "Afrikaans" to "af-ZA",
+        "Croatian" to "hr-HR",
+        "Bulgarian" to "bg-BG",
+        "Slovak" to "sk-SK",
+        "Catalan" to "ca-ES"
     )
 
     val langToTTS = mapOf(
@@ -1117,14 +1177,46 @@ fun SpeechNovaApp(
         "Marathi" to Locale.Builder().setLanguage("mr").setRegion("IN").build(),
         "Gujarati" to Locale.Builder().setLanguage("gu").setRegion("IN").build(),
         "Kannada" to Locale.Builder().setLanguage("kn").setRegion("IN").build(),
-        "Urdu" to Locale.Builder().setLanguage("ur").setRegion("PK").build()
+        "Urdu" to Locale.Builder().setLanguage("ur").setRegion("PK").build(),
+        "Indonesian" to Locale.Builder().setLanguage("id").setRegion("ID").build(),
+        "Malay" to Locale.Builder().setLanguage("ms").setRegion("MY").build(),
+        "Thai" to Locale.Builder().setLanguage("th").setRegion("TH").build(),
+        "Vietnamese" to Locale.Builder().setLanguage("vi").setRegion("VN").build(),
+        "Turkish" to Locale.Builder().setLanguage("tr").setRegion("TR").build(),
+        "Persian" to Locale.Builder().setLanguage("fa").setRegion("IR").build(),
+        "Hebrew" to Locale.Builder().setLanguage("iw").setRegion("IL").build(),
+        "Dutch" to Locale.Builder().setLanguage("nl").setRegion("NL").build(),
+        "Polish" to Locale.Builder().setLanguage("pl").setRegion("PL").build(),
+        "Ukrainian" to Locale.Builder().setLanguage("uk").setRegion("UA").build(),
+        "Greek" to Locale.Builder().setLanguage("el").setRegion("GR").build(),
+        "Swedish" to Locale.Builder().setLanguage("sv").setRegion("SE").build(),
+        "Danish" to Locale.Builder().setLanguage("da").setRegion("DK").build(),
+        "Norwegian" to Locale.Builder().setLanguage("nb").setRegion("NO").build(),
+        "Finnish" to Locale.Builder().setLanguage("fi").setRegion("FI").build(),
+        "Czech" to Locale.Builder().setLanguage("cs").setRegion("CZ").build(),
+        "Romanian" to Locale.Builder().setLanguage("ro").setRegion("RO").build(),
+        "Hungarian" to Locale.Builder().setLanguage("hu").setRegion("HU").build(),
+        "Swahili" to Locale.Builder().setLanguage("sw").setRegion("KE").build(),
+        "Filipino" to Locale.Builder().setLanguage("fil").setRegion("PH").build(),
+        "Afrikaans" to Locale.Builder().setLanguage("af").setRegion("ZA").build(),
+        "Croatian" to Locale.Builder().setLanguage("hr").setRegion("HR").build(),
+        "Bulgarian" to Locale.Builder().setLanguage("bg").setRegion("BG").build(),
+        "Slovak" to Locale.Builder().setLanguage("sk").setRegion("SK").build(),
+        "Catalan" to Locale.Builder().setLanguage("ca").setRegion("ES").build()
     )
 
+    // Indian languages first — this app's main audience — then the rest
+    // alphabetically so a long list stays scannable.
     val langList = listOf(
         "Hindi", "Bengali", "Tamil", "Telugu", "Marathi",
         "Gujarati", "Kannada", "Urdu",
-        "English", "Spanish", "French", "German", "Chinese",
-        "Japanese", "Korean", "Arabic", "Russian", "Portuguese", "Italian"
+        "English",
+        "Afrikaans", "Arabic", "Bulgarian", "Catalan", "Chinese", "Croatian",
+        "Czech", "Danish", "Dutch", "Filipino", "Finnish", "French", "German",
+        "Greek", "Hebrew", "Hungarian", "Indonesian", "Italian", "Japanese",
+        "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese",
+        "Romanian", "Russian", "Slovak", "Spanish", "Swahili", "Swedish",
+        "Thai", "Turkish", "Ukrainian", "Vietnamese"
     )
 
     // Function to select appropriate voice (male/female/romantic)
@@ -1132,7 +1224,8 @@ fun SpeechNovaApp(
         val locale = langToTTS[targetLang] ?: Locale.US
         tts?.language = locale
 
-        val selectedVoice = pickBestVoice(tts?.voices, locale, useFemaleVoice)
+        val selectedVoice =
+            pickBestVoice(tts?.voices, locale, useFemaleVoice, isOnline(context))
 
         if (selectedVoice != null) {
             tts?.voice = selectedVoice
@@ -1678,6 +1771,11 @@ fun SpeechNovaApp(
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra("android.speech.extra.DICTATION_MODE", true)
+            // Without this the recognizer streams audio to Google's servers
+            // and just fails when there's no network. Only asked for when
+            // actually offline: preferring offline while online would give up
+            // the better online model for nothing.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
             }
@@ -1757,6 +1855,10 @@ fun SpeechNovaApp(
                                         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                                         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                                         putExtra("android.speech.extra.DICTATION_MODE", true)
+                                        putExtra(
+                                            RecognizerIntent.EXTRA_PREFER_OFFLINE,
+                                            !isOnline(context)
+                                        )
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                             putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                                         }
@@ -1833,6 +1935,7 @@ fun SpeechNovaApp(
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                     putExtra("android.speech.extra.DICTATION_MODE", true)
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                     }
@@ -2129,6 +2232,7 @@ fun SpeechNovaApp(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[lang] ?: "en-IN")
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
         }
         try {
             sr.startListening(intent)
@@ -2573,7 +2677,12 @@ fun SpeechNovaApp(
                     // engine had quietly fallen back to its robotic default.
                     Spacer(Modifier.height(6.dp))
                     val activeVoice = remember(toLang, useFemaleVoice, showSettings) {
-                        pickBestVoice(tts?.voices, langToTTS[toLang] ?: Locale.US, useFemaleVoice)
+                        pickBestVoice(
+                            tts?.voices,
+                            langToTTS[toLang] ?: Locale.US,
+                            useFemaleVoice,
+                            isOnline(context)
+                        )
                     }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
