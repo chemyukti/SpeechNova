@@ -6,7 +6,10 @@ junit = "4.13.2"
 junitVersion = "1.2.1"
 espressoCore = "3.6.1"
 lifecycleRuntimeKtx = "2.8.7"
-activityCompose = "1.9.3"
+# 1.10.x is the first androidx.activity whose enableEdgeToEdge() stopped using
+# LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES, which Android 15 deprecated — that
+# is the `androidx.activity.k.w` frame in Play's report.
+activityCompose = "1.10.1"
 composeBom = "2024.10.01"
 
 [libraries]

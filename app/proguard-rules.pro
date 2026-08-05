@@ -1,155 +1,24 @@
-# Add project specific ProGuard rules here.
+# SpeechNova — R8 configuration.
+#
+# This file used to keep almost everything: `-keep class android.** { *; }`,
+# `androidx.**`, `kotlin.**` and the whole app package. Blanket keeps like that
+# don't make a build safer, they switch R8 off — nothing can be renamed, nothing
+# can be removed, and nothing can be inlined across a kept boundary. That is
+# exactly what Play reported: shrinking, obfuscation and optimization all
+# disabled at once.
+#
+# The libraries this app uses (AndroidX, Compose, Play Services, ML Kit) all
+# ship their own consumer ProGuard rules, which R8 applies automatically. They
+# do not need keeping by hand, and keeping them by hand is what broke this.
+#
+# The app itself uses no reflection, no Gson/Moshi/Retrofit models and no
+# Class.forName, so it needs no keep rules of its own either.
 
-# ============================================
-# 🔒 CRITICAL: Keep Android/Compose classes
-# ============================================
-
-# Keep all classes with native methods
--keepclasseswithmembernames class * {
-    native <methods>;
-}
-
-# Keep classes that have custom constructors (Activity, Service, etc.)
--keepclasseswithmembers class * {
-    public <init>(android.content.Context, android.util.AttributeSet);
-}
-
-# Keep android.os.Parcelable classes
--keep interface android.os.Parcelable {
-    public static final android.os.Parcelable$Creator *;
-}
-
-# Keep all Parcelable subclasses
--keepclassmembers class * implements android.os.Parcelable {
-    static android.os.Parcelable$Creator CREATOR;
-}
-
-# Keep all enum classes
--keepclassmembers enum * {
-    public static **[] values();
-    public static ** valueOf(java.lang.String);
-}
-
-# Keep R (resources) classes
--keep class **.R$* {
-    public static <fields>;
-}
-
-# ============================================
-# 🔒 CRITICAL: Keep Compose classes
-# ============================================
-
--keep class androidx.compose.** { *; }
--keep interface androidx.compose.** { *; }
--keepclassmembers class androidx.compose.** { *; }
-
-# Keep Compose runtime
--keep class androidx.compose.runtime.** { *; }
--keep interface androidx.compose.runtime.** { *; }
-
-# Keep Compose foundation
--keep class androidx.compose.foundation.** { *; }
--keep interface androidx.compose.foundation.** { *; }
-
-# Keep Compose Material3
--keep class androidx.compose.material3.** { *; }
--keep interface androidx.compose.material3.** { *; }
-
-# Keep Compose UI
--keep class androidx.compose.ui.** { *; }
--keep interface androidx.compose.ui.** { *; }
-
-# ============================================
-# 🔒 CRITICAL: Keep AndroidX classes
-# ============================================
-
--keep class androidx.** { *; }
--keep interface androidx.** { *; }
--keep class androidx.core.** { *; }
--keep class androidx.activity.** { *; }
--keep class androidx.lifecycle.** { *; }
--keepclassmembers class androidx.** { *; }
-
-# ============================================
-# 🔒 CRITICAL: Keep Google Play Services
-# ============================================
-
--keep class com.google.android.gms.** { *; }
--keep interface com.google.android.gms.** { *; }
--keep class com.google.android.ads.** { *; }
--keepclassmembers class com.google.** { *; }
-
-# Keep AdMob classes
--keep class com.google.android.gms.ads.** { *; }
--keep interface com.google.android.gms.ads.** { *; }
--keepclassmembers class com.google.android.gms.ads.** { *; }
-
-# ============================================
-# 🔒 CRITICAL: Keep MLKit Translation
-# ============================================
-
--keep class com.google.mlkit.nl.translate.** { *; }
--keep interface com.google.mlkit.nl.translate.** { *; }
--keep class com.google.mlkit.common.** { *; }
--keep interface com.google.mlkit.common.** { *; }
--keepclassmembers class com.google.mlkit.** { *; }
-
-# ============================================
-# 🔒 CRITICAL: Keep Android OS classes
-# ============================================
-
--keep class android.** { *; }
--keep interface android.** { *; }
--keep class android.speech.** { *; }
--keep class android.speech.tts.** { *; }
--keep interface android.speech.** { *; }
-
-# ============================================
-# 🔒 CRITICAL: Keep Your App Classes
-# ============================================
-
--keep class com.parashmani.speechnova.** { *; }
--keep interface com.parashmani.speechnova.** { *; }
--keepclassmembers class com.parashmani.speechnova.** { *; }
-
-# Keep MainActivity
--keep class com.parashmani.speechnova.MainActivity { *; }
--keepclassmembers class com.parashmani.speechnova.MainActivity { *; }
-
-# ============================================
-# 🔒 Kotlin support
-# ============================================
-
--keep class kotlin.** { *; }
--keep interface kotlin.** { *; }
--keep class kotlinx.** { *; }
--keep interface kotlinx.** { *; }
--keepclassmembers class kotlin.** { *; }
-
-# Keep annotations
--keep class java.lang.annotation.* { *; }
--keep class kotlin.annotation.* { *; }
-
-# ============================================
-# Optimizations (safe)
-# ============================================
-
--optimizationpasses 5
--dontusemixedcaseclassnames
--verbose
-
-# Keep line numbers for crash reports
+# Crash reports stay readable: line numbers are preserved and the original
+# source file name is hidden behind a placeholder.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
-# ============================================
-# Important: Don't remove these
-# ============================================
-
-# Keep everything in your package just to be safe for initial release
--keep class com.parashmani.** { *; }
--keepclassmembers class com.parashmani.** { *; }
-
-# For debugging
--keepattributes InnerClasses
--keepattributes EnclosingMethod
+# Kotlin coroutines' internal debugging probes are looked up reflectively by the
+# runtime; without this the stack traces get worse, and R8 warns.
+-dontwarn kotlinx.coroutines.**
