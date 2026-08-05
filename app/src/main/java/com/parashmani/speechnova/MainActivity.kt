@@ -34,6 +34,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -159,11 +160,19 @@ private fun soundsLikeOurOwnVoice(heard: String, spoken: String): Boolean {
 
 class MainActivity : ComponentActivity() {
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    private var appUpdates: AppUpdates? = null
 
-        // Enable edge-to-edge for Android 15+ compatibility
-        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+    /** Flipped when a downloaded update is waiting for the app to restart. */
+    private var updateReadyToInstall by mutableStateOf(false)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Android 15 makes apps targeting SDK 35+ edge-to-edge whether they ask
+        // or not. enableEdgeToEdge() is the supported way in: it sets the
+        // system-bar handling this app needs and keeps behaving on older
+        // releases. It has to run before super.onCreate to apply to the first
+        // frame. Insets are consumed by systemBarsPadding() on the root layout.
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
 
         check(packageName == APP_PACKAGE) {
             "License violation: $APP_NAME was created by $APP_AUTHOR. " +
@@ -179,11 +188,35 @@ class MainActivity : ComponentActivity() {
         // SDK starts, so the ads stay consistent with the store rating.
         AdPolicy.initialize(this)
 
+        // Offer a newer version if Play has one. Downloads in the background;
+        // the user is only interrupted at the end, to restart.
+        appUpdates = AppUpdates(this).also { updates ->
+            updates.onReadyToInstall = { updateReadyToInstall = true }
+            updates.check()
+        }
+
         setContent {
             MaterialTheme {
-                SpeechNovaApp()
+                SpeechNovaApp(
+                    updateReadyToInstall = updateReadyToInstall,
+                    onInstallUpdate = { appUpdates?.completeUpdate() },
+                    onDismissUpdate = { updateReadyToInstall = false }
+                )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // An update that finished downloading while the app was away still
+        // needs its "restart to finish" prompt.
+        appUpdates?.resume()
+    }
+
+    override fun onDestroy() {
+        appUpdates?.dispose()
+        appUpdates = null
+        super.onDestroy()
     }
 }
 
@@ -636,6 +669,73 @@ private fun HelpSection(title: String) {
     )
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// VOICE SELECTION
+//
+// Two things were making the app sound robotic even on phones that have a
+// good voice installed:
+//
+//  1. Voices were matched with `voice.locale == locale`. A Voice's locale
+//     usually carries a variant the plain Locale doesn't — en_IN vs en-IN-…,
+//     hi_IN with a script tag — so exact equality often matched nothing at
+//     all, and the engine fell back to its default robotic voice.
+//  2. Among whatever did match, `firstOrNull` took the first in an unordered
+//     set rather than the best. A phone with a natural neural voice would
+//     happily hand back a low-quality one.
+//
+// This matches on language (and prefers the same country), skips voices that
+// aren't actually installed, and takes the highest quality that is left.
+// ═══════════════════════════════════════════════════════════════════════
+private fun pickBestVoice(
+    voices: Set<android.speech.tts.Voice>?,
+    locale: Locale,
+    preferFemale: Boolean
+): android.speech.tts.Voice? {
+    if (voices.isNullOrEmpty()) return null
+
+    fun isFemaleName(name: String) =
+        name.contains("female", true) || name.contains("woman", true) ||
+                // Most engines don't say "female" — Google's voices end in a
+                // letter, of which #a and #c are the female ones.
+                name.contains("#female", true) || Regex("-[a-z]{2}-[a-z]-(a|c)$")
+                    .containsMatchIn(name.lowercase())
+
+    fun isMaleName(name: String) =
+        name.contains("male", true) && !name.contains("female", true) ||
+                name.contains("#male", true)
+
+    val candidates = voices.filter { voice ->
+        val vl = voice.locale ?: return@filter false
+        vl.language.equals(locale.language, ignoreCase = true) &&
+                // A voice the user hasn't downloaded will silently fail.
+                !voice.features.orEmpty()
+                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+    }
+    if (candidates.isEmpty()) return null
+
+    // Rank rather than filter, so a preference that can't be met degrades to
+    // the next best voice instead of to no voice at all.
+    return candidates.maxWithOrNull(
+        compareBy<android.speech.tts.Voice> { voice ->
+            val female = isFemaleName(voice.name)
+            val male = isMaleName(voice.name)
+            when {
+                preferFemale && female -> 2
+                !preferFemale && male -> 2
+                !female && !male -> 1   // unlabelled: acceptable either way
+                else -> 0               // the gender the user didn't ask for
+            }
+        }
+            // Same country beats a different accent of the same language.
+            .thenBy { if (it.locale.country.equals(locale.country, true)) 1 else 0 }
+            // QUALITY_VERY_HIGH (500) down to QUALITY_VERY_LOW (100) — this is
+            // what actually decides whether it sounds human.
+            .thenBy { it.quality }
+            // A tie on everything else: prefer one that works offline.
+            .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 }
+    )
+}
+
 // One numbered step in the How-to-Use guide.
 @Composable
 private fun HelpStep(number: String, title: String, description: String) {
@@ -846,7 +946,11 @@ private fun pronunciationMatches(target: String, heard: String, lang: String): B
 }
 
 @Composable
-fun SpeechNovaApp() {
+fun SpeechNovaApp(
+    updateReadyToInstall: Boolean = false,
+    onInstallUpdate: () -> Unit = {},
+    onDismissUpdate: () -> Unit = {}
+) {
     val context = LocalContext.current
     val handler = remember { Handler(Looper.getMainLooper()) }
     val clipboardManager = LocalClipboardManager.current
@@ -877,6 +981,14 @@ fun SpeechNovaApp() {
     var showSettings by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showFavorites by remember { mutableStateOf(false) }
+
+    // ── Type / paste text and translate it ──
+    var showTextTranslate by remember { mutableStateOf(false) }
+    var pastedText by remember { mutableStateOf("") }
+    var pastedDetectedLang by remember { mutableStateOf<String?>(null) }
+    var pastedResult by remember { mutableStateOf("") }
+    var pastedBusy by remember { mutableStateOf(false) }
+    var pastedError by remember { mutableStateOf("") }
 
     // LEARN screen
     var learnLang by remember { mutableStateOf(toLang) }
@@ -995,29 +1107,17 @@ fun SpeechNovaApp() {
         val locale = langToTTS[targetLang] ?: Locale.US
         tts?.language = locale
 
-        val voices = tts?.voices
-        val selectedVoice = if (useFemaleVoice) {
-            voices?.firstOrNull { voice ->
-                voice.locale == locale && (
-                        voice.name.contains("female", ignoreCase = true) ||
-                                voice.name.contains("woman", ignoreCase = true) ||
-                                voice.name.contains("myra", ignoreCase = true) ||
-                                (!voice.name.contains("male", ignoreCase = true) && voice.quality >= 400)
-                        )
-            }
-        } else {
-            voices?.firstOrNull { voice ->
-                voice.locale == locale && (
-                        voice.name.contains("male", ignoreCase = true) ||
-                                voice.name.contains("man", ignoreCase = true) ||
-                                voice.quality >= 400
-                        )
-            }
-        }
+        val selectedVoice = pickBestVoice(tts?.voices, locale, useFemaleVoice)
 
         if (selectedVoice != null) {
             tts?.voice = selectedVoice
-            Log.i("SpeechNova", "Selected voice: ${selectedVoice.name} (${if (useFemaleVoice) "Female" else "Male"})")
+            Log.i(
+                "SpeechNova",
+                "Selected voice: ${selectedVoice.name} quality=${selectedVoice.quality} " +
+                        "(${if (useFemaleVoice) "Female" else "Male"})"
+            )
+        } else {
+            Log.w("SpeechNova", "No installed voice matched $locale — using engine default")
         }
 
         if (romanticMode) {
@@ -1238,6 +1338,70 @@ fun SpeechNovaApp() {
             .trim()
         tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, null, null)
         status = "✅ Phrase spoken"
+    }
+
+    // ── TYPE / PASTE TEXT: work out what language it is, then translate it ──
+    // The source language is detected rather than assumed, so you can paste
+    // something in a language you can't even name and still get it translated.
+    fun translatePastedText() {
+        val source = pastedText.trim()
+        if (source.isEmpty()) {
+            pastedError = "Type or paste something first"
+            return
+        }
+        pastedBusy = true
+        pastedError = ""
+        pastedResult = ""
+
+        LanguageDetection.detect(source) { detected ->
+            pastedDetectedLang = detected
+            // Detection declines on very short or ambiguous text; the language
+            // picked on Home is the sensible fallback.
+            val sourceLang = detected ?: fromLang
+
+            if (sourceLang == toLang) {
+                pastedResult = source
+                pastedBusy = false
+                return@detect
+            }
+
+            val fromCode = langToMLKit[sourceLang]
+            val toCode = langToMLKit[toLang]
+            if (fromCode == null || toCode == null) {
+                pastedError = "Can't translate $sourceLang → $toLang yet"
+                pastedBusy = false
+                return@detect
+            }
+
+            val translator = Translation.getClient(
+                TranslatorOptions.Builder()
+                    .setSourceLanguage(fromCode)
+                    .setTargetLanguage(toCode)
+                    .build()
+            )
+            // The detected language may be one whose pack was never downloaded
+            // — this pair is chosen by the text, not by the Home pickers.
+            translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                .addOnSuccessListener {
+                    translator.translate(source)
+                        .addOnSuccessListener { out ->
+                            pastedResult = out.trim()
+                            pastedBusy = false
+                            translator.close()
+                        }
+                        .addOnFailureListener {
+                            pastedError = "Translation failed — please try again"
+                            pastedBusy = false
+                            translator.close()
+                        }
+                }
+                .addOnFailureListener {
+                    pastedError =
+                        "Couldn't download the $sourceLang language pack — connect to the internet once and try again"
+                    pastedBusy = false
+                    translator.close()
+                }
+        }
     }
 
     fun translatePhraseAndSpeak(englishPhrase: String) {
@@ -1666,6 +1830,22 @@ fun SpeechNovaApp() {
                     )
                 }
 
+                // Android's recognizer has to be told which language to expect,
+                // so it will happily transcribe the wrong one into nonsense.
+                // Checking what language the words actually came out as catches
+                // the common "I picked the wrong source language" mistake.
+                LanguageDetection.detect(spoken) { detected ->
+                    if (detected != null && detected != fromLang) {
+                        messages.add(
+                            TranslationMessage(
+                                displayText = "🔎 That sounded like $detected, not $fromLang. " +
+                                        "If the translation looks wrong, change the language on the left to $detected.",
+                                type = "hint"
+                            )
+                        )
+                    }
+                }
+
                 status = "🌍 Translating..."
                 recognizer?.stopListening()
 
@@ -2080,6 +2260,12 @@ fun SpeechNovaApp() {
                         if (!hasCameraPermission()) cameraPermLauncher.launch(Manifest.permission.CAMERA)
                         else launchCameraScan()
                     },
+                    onTranslateText = {
+                        pastedResult = ""
+                        pastedError = ""
+                        pastedDetectedLang = null
+                        showTextTranslate = true
+                    },
                     onPlayAll = { repeatAllConversation() },
                     onListen = { text -> repeatSpeech(text, toLang) },
                     onCopy = { text -> copyToClipboard(text) },
@@ -2391,6 +2577,239 @@ fun SpeechNovaApp() {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // UPDATE READY — a newer version finished downloading in the
+    // background and only needs a restart to take effect.
+    // ═══════════════════════════════════════════════════════════
+    if (updateReadyToInstall) {
+        AlertDialog(
+            onDismissRequest = onDismissUpdate,
+            containerColor = Color(0xFF1e293b),
+            title = {
+                Text("🎉 Update ready", color = Color.White, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "A new version of SpeechNova has downloaded. Restart now to start using it — it only takes a moment.",
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = onInstallUpdate,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10b981))
+                ) {
+                    Text("Restart now", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissUpdate) {
+                    Text("Later", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // TEXT TRANSLATE — type or paste anything, in any language.
+    // ═══════════════════════════════════════════════════════════
+    if (showTextTranslate) {
+        Dialog(
+            onDismissRequest = { showTextTranslate = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .padding(vertical = 16.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "📝 Translate text",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { showTextTranslate = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Text("✕", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Paste or type anything. SpeechNova works out which language it is, then translates it into $toLang.",
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = pastedText,
+                        onValueChange = {
+                            pastedText = it
+                            pastedResult = ""
+                            pastedError = ""
+                            pastedDetectedLang = null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 110.dp),
+                        placeholder = {
+                            Text(
+                                "Type here, or tap Paste below",
+                                color = Color.White.copy(alpha = 0.4f),
+                                fontSize = 14.sp
+                            )
+                        },
+                        textStyle = LocalTextStyle.current.copy(
+                            color = Color.White,
+                            fontSize = 15.sp
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF6366f1),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                            cursorColor = Color(0xFF6366f1)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                val clip = clipboardManager.getText()?.text
+                                if (clip.isNullOrBlank()) {
+                                    pastedError = "Nothing to paste — copy some text first"
+                                } else {
+                                    pastedText = clip
+                                    pastedResult = ""
+                                    pastedError = ""
+                                    pastedDetectedLang = null
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF334155)
+                            )
+                        ) {
+                            Text("📋 Paste", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { translatePastedText() },
+                            enabled = !pastedBusy && pastedText.isNotBlank(),
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10b981),
+                                disabledContainerColor = Color(0xFF374151)
+                            )
+                        ) {
+                            Text(
+                                if (pastedBusy) "⏳ Working…" else "🌍 Translate",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    if (pastedDetectedLang != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Surface(
+                            color = Color(0xFF312e81),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            Text(
+                                "🔎 That looks like $pastedDetectedLang",
+                                color = Color(0xFFc7d2fe),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    if (pastedError.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "⚠️ $pastedError",
+                            color = Color(0xFFfca5a5),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
+
+                    if (pastedResult.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF0f2e2a),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    toLang.uppercase(),
+                                    color = Color(0xFF6ee7b7),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    pastedResult,
+                                    color = Color.White,
+                                    fontSize = 17.sp,
+                                    lineHeight = 24.sp
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                Row {
+                                    MiniLabeledIcon(emoji = "🔊", label = "Listen") {
+                                        repeatSpeech(pastedResult, toLang)
+                                    }
+                                    MiniLabeledIcon(emoji = "📋", label = "Copy") {
+                                        copyToClipboard(pastedResult)
+                                    }
+                                    MiniLabeledIcon(emoji = "📤", label = "Share") {
+                                        shareText(pastedResult)
+                                    }
+                                    MiniLabeledIcon(emoji = "⭐", label = "Save") {
+                                        messages.add(
+                                            TranslationMessage(
+                                                displayText = pastedResult,
+                                                originalText = pastedText.trim(),
+                                                type = "translation",
+                                                translatedText = pastedResult,
+                                                isFavorite = mutableStateOf(true)
+                                            )
+                                        )
+                                        status = "⭐ Saved"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // HELP DIALOG — plain-language guide, shown on first open.
     // ═══════════════════════════════════════════════════════════
     if (showHelp) {
@@ -2445,19 +2864,20 @@ fun SpeechNovaApp() {
                         HelpStep("11", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
                         HelpSection("Other ways to translate")
-                        HelpStep("12", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("13", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
-                        HelpStep("14", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
-                        HelpStep("15", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+                        HelpStep("12", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("13", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("14", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("15", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("16", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
                         HelpSection("Learning as you go")
-                        HelpStep("16", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("17", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
-                        HelpStep("18", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("17", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
+                        HelpStep("19", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
 
                         HelpSection("Making it yours")
-                        HelpStep("19", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("20", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("20", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("21", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -2499,6 +2919,7 @@ private fun HomeScreenContent(
     onPickTo: (String) -> Unit,
     onSwapLangs: () -> Unit,
     onScanCamera: () -> Unit,
+    onTranslateText: () -> Unit,
     onPlayAll: () -> Unit,
     onListen: (String) -> Unit,
     onCopy: (String) -> Unit,
@@ -2571,6 +2992,7 @@ private fun HomeScreenContent(
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     HeaderShortcut(emoji = "❓", label = "How to use", onClick = onShowHelp)
+                    HeaderShortcut(emoji = "📝", label = "Text", onClick = onTranslateText)
                     HeaderShortcut(emoji = "📷", label = "Scan", onClick = onScanCamera)
                     HeaderShortcut(emoji = "⭐", label = "Saved", onClick = onShowFavorites)
                     HeaderShortcut(emoji = "⚙️", label = "Settings", onClick = onShowSettings)

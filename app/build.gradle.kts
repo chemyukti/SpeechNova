@@ -15,8 +15,8 @@ android {
         // 7 was rejected for ad content inconsistent with the content rating,
         // 8 for a Families ad-format violation (the rewarded ad). A rejected
         // version code can never be re-uploaded.
-        versionCode = 9
-        versionName = "1.5.2"
+        versionCode = 10
+        versionName = "1.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -71,6 +71,14 @@ dependencies {
 
     // MLKit Translation
     implementation("com.google.mlkit:translate:17.0.3")
+
+    // MLKit on-device language identification — works out which language a
+    // piece of text is in, with no network call and nothing leaving the phone.
+    implementation("com.google.mlkit:language-id:17.0.6")
+
+    // Play In-App Updates: prompts the user inside the app when a newer
+    // version is on the Play Store.
+    implementation("com.google.android.play:app-update-ktx:2.1.0")
 
     // MLKit Text Recognition (camera OCR) — one module per script family.
     // Latin covers English/Spanish/French/German/Portuguese/Italian.
