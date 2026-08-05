@@ -393,32 +393,57 @@ private fun buildLearningGuide(translated: String, targetLang: String, original:
 }
 
 
+// The header's colour scheme. Each shortcut gets its own accent rather than
+// five identical translucent circles — colour is the fastest thing to aim for
+// on a crowded row, and it gives each action a constant identity.
+private val HEADER_GRADIENT = listOf(
+    Color(0xFF4f46e5), // indigo
+    Color(0xFF7c3aed), // violet
+    Color(0xFFa855f7), // purple
+    Color(0xFFdb2777)  // rose
+)
+private val ACCENT_HELP = Color(0xFFfbbf24)      // amber
+private val ACCENT_TEXT = Color(0xFF38bdf8)      // sky
+private val ACCENT_SCAN = Color(0xFF34d399)      // emerald
+private val ACCENT_SAVED = Color(0xFFf472b6)     // pink
+private val ACCENT_SETTINGS = Color(0xFFc4b5fd)  // light violet
+
 // A header icon that always carries a real text label underneath it, so
 // nothing in the top bar depends on a beginner correctly guessing an emoji.
 @Composable
-private fun HeaderShortcut(emoji: String, label: String, onClick: () -> Unit) {
+private fun HeaderShortcut(
+    emoji: String,
+    label: String,
+    accent: Color,
+    onClick: () -> Unit
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(34.dp)
+                .size(36.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.18f)),
+                // A solid accent under the emoji, lifted off the gradient by a
+                // pale ring so it stays legible whatever colour it sits over.
+                .background(Color.White.copy(alpha = 0.35f))
+                .padding(2.dp)
+                .clip(CircleShape)
+                .background(accent),
             contentAlignment = Alignment.Center
         ) {
             Text(emoji, fontSize = 15.sp)
         }
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(4.dp))
         Text(
             label,
-            color = Color.White.copy(alpha = 0.9f),
+            color = Color.White,
             fontSize = 10.sp,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Bold
         )
     }
 }
@@ -2942,15 +2967,14 @@ private fun HomeScreenContent(
             .verticalScroll(rememberScrollState())
     ) {
         // ── HEADER ──
+        // A four-stop diagonal sweep rather than the old two-stop indigo, and
+        // a soft rounded base so the colour reads as a band rather than a slab.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(Color(0xFF6366f1), Color(0xFF8b5cf6))
-                    )
-                )
-                .padding(vertical = 16.dp, horizontal = 16.dp)
+                .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+                .background(Brush.linearGradient(colors = HEADER_GRADIENT))
+                .padding(vertical = 16.dp, horizontal = 14.dp)
         ) {
             Column {
                 Row(
@@ -2961,9 +2985,19 @@ private fun HomeScreenContent(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(42.dp)
                                 .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.2f)),
+                                .background(Color.White.copy(alpha = 0.28f))
+                                .padding(2.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            Color(0xFF22d3ee),
+                                            Color(0xFF818cf8)
+                                        )
+                                    )
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Text("🌐", fontSize = 20.sp)
@@ -2973,13 +3007,14 @@ private fun HomeScreenContent(
                             Text(
                                 "SpeechNova",
                                 color = Color.White,
-                                fontSize = 19.sp,
+                                fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 "Speak. Translate. Be understood.",
-                                color = Color.White.copy(alpha = 0.8f),
-                                fontSize = 11.sp
+                                color = Color(0xFFfde68a),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
                     }
@@ -2991,11 +3026,11 @@ private fun HomeScreenContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    HeaderShortcut(emoji = "❓", label = "How to use", onClick = onShowHelp)
-                    HeaderShortcut(emoji = "📝", label = "Text", onClick = onTranslateText)
-                    HeaderShortcut(emoji = "📷", label = "Scan", onClick = onScanCamera)
-                    HeaderShortcut(emoji = "⭐", label = "Saved", onClick = onShowFavorites)
-                    HeaderShortcut(emoji = "⚙️", label = "Settings", onClick = onShowSettings)
+                    HeaderShortcut("❓", "How to use", ACCENT_HELP, onShowHelp)
+                    HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
+                    HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
+                    HeaderShortcut("⭐", "Saved", ACCENT_SAVED, onShowFavorites)
+                    HeaderShortcut("⚙️", "Settings", ACCENT_SETTINGS, onShowSettings)
                 }
             }
         }
