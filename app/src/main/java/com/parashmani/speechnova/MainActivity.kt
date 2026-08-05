@@ -714,7 +714,8 @@ private fun HelpSection(title: String) {
 private fun pickBestVoice(
     voices: Set<android.speech.tts.Voice>?,
     locale: Locale,
-    preferFemale: Boolean
+    preferFemale: Boolean,
+    allowNetworkVoices: Boolean
 ): android.speech.tts.Voice? {
     if (voices.isNullOrEmpty()) return null
 
@@ -734,7 +735,11 @@ private fun pickBestVoice(
         vl.language.equals(locale.language, ignoreCase = true) &&
                 // A voice the user hasn't downloaded will silently fail.
                 !voice.features.orEmpty()
-                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) &&
+                // With no network, a voice that needs one can't say anything at
+                // all — however natural it sounds when there is one. Dropping
+                // it here is what keeps the app speaking offline.
+                (allowNetworkVoices || !voice.isNetworkConnectionRequired)
     }
     if (candidates.isEmpty()) return null
 
@@ -753,11 +758,12 @@ private fun pickBestVoice(
         }
             // Same country beats a different accent of the same language.
             .thenBy { if (it.locale.country.equals(locale.country, true)) 1 else 0 }
+            // Prefer a voice that keeps working when the network drops mid
+            // conversation, ahead of raw quality — this app is offline-first.
+            .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 }
             // QUALITY_VERY_HIGH (500) down to QUALITY_VERY_LOW (100) — this is
             // what actually decides whether it sounds human.
             .thenBy { it.quality }
-            // A tie on everything else: prefer one that works offline.
-            .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 }
     )
 }
 
@@ -910,6 +916,45 @@ data class VocabItem(
     val roman: String          // read-aloud romanization (Devanagari only, else "")
 )
 
+/** One multiple-choice question: an English word and four candidate
+ *  translations, exactly one of which is right. */
+data class QuizQuestion(
+    val english: String,
+    val correct: String,
+    val options: List<String>
+)
+
+/** Points for a right answer. Wrong answers cost nothing — this is meant to
+ *  encourage a learner, not to punish one. */
+private const val QUIZ_POINTS_PER_ANSWER = 10
+
+/** Kept short enough to finish in a spare minute. */
+private const val QUIZ_LENGTH = 8
+
+/**
+ * Builds a round from whatever words are loaded. The wrong answers are drawn
+ * from the same language, so the choice is a real test of the word rather than
+ * of which option looks out of place.
+ */
+private fun buildQuiz(words: List<VocabItem>): List<QuizQuestion> {
+    val usable = words.filter { it.translated.isNotBlank() && it.english.isNotBlank() }
+        .distinctBy { it.english }
+    // Four options need four distinct translations to choose between.
+    if (usable.size < 4) return emptyList()
+    return usable.shuffled().take(QUIZ_LENGTH).map { item ->
+        val distractors = usable
+            .filter { it.translated != item.translated }
+            .shuffled()
+            .take(3)
+            .map { it.translated }
+        QuizQuestion(
+            english = item.english,
+            correct = item.translated,
+            options = (distractors + item.translated).shuffled()
+        )
+    }
+}
+
 /** Result of one pronunciation attempt. */
 data class PracticeResult(
     val target: String,   // the word the learner was asked to say
@@ -1027,6 +1072,23 @@ fun SpeechNovaApp(
     var practiceResult by remember { mutableStateOf<PracticeResult?>(null) }
     var practiceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
+    // ── Quiz game & the device's learners ──
+    var showQuiz by remember { mutableStateOf(false) }
+    var quizQuestions by remember { mutableStateOf<List<QuizQuestion>>(emptyList()) }
+    var quizIndex by remember { mutableIntStateOf(0) }
+    var quizScore by remember { mutableIntStateOf(0) }
+    var quizChosen by remember { mutableStateOf<String?>(null) }
+    var learnerName by remember { mutableStateOf<String?>(null) }
+    var nameEntry by remember { mutableStateOf("") }
+    var leaderboard by remember { mutableStateOf<List<Learner>>(emptyList()) }
+
+    // ── Words the learner added themselves ──
+    var showAddWord by remember { mutableStateOf(false) }
+    var newWordEnglish by remember { mutableStateOf("") }
+    var newWordTranslated by remember { mutableStateOf("") }
+    var newWordBusy by remember { mutableStateOf(false) }
+    var newWordError by remember { mutableStateOf("") }
+
     // FACE-TO-FACE (continuous conversation — free, no ad gate)
     var topBubble by remember { mutableStateOf("") }
     var bottomBubble by remember { mutableStateOf("") }
@@ -1073,7 +1135,36 @@ fun SpeechNovaApp(
         "Marathi" to TranslateLanguage.MARATHI,
         "Gujarati" to TranslateLanguage.GUJARATI,
         "Kannada" to TranslateLanguage.KANNADA,
-        "Urdu" to TranslateLanguage.URDU
+        "Urdu" to TranslateLanguage.URDU,
+        // Every language below is one ML Kit can actually translate offline.
+        // Malayalam, Punjabi, Odia, Assamese and Nepali are deliberately absent
+        // — ML Kit ships no model for them, and offering a language the app
+        // cannot translate would be worse than not listing it.
+        "Indonesian" to TranslateLanguage.INDONESIAN,
+        "Malay" to TranslateLanguage.MALAY,
+        "Thai" to TranslateLanguage.THAI,
+        "Vietnamese" to TranslateLanguage.VIETNAMESE,
+        "Turkish" to TranslateLanguage.TURKISH,
+        "Persian" to TranslateLanguage.PERSIAN,
+        "Hebrew" to TranslateLanguage.HEBREW,
+        "Dutch" to TranslateLanguage.DUTCH,
+        "Polish" to TranslateLanguage.POLISH,
+        "Ukrainian" to TranslateLanguage.UKRAINIAN,
+        "Greek" to TranslateLanguage.GREEK,
+        "Swedish" to TranslateLanguage.SWEDISH,
+        "Danish" to TranslateLanguage.DANISH,
+        "Norwegian" to TranslateLanguage.NORWEGIAN,
+        "Finnish" to TranslateLanguage.FINNISH,
+        "Czech" to TranslateLanguage.CZECH,
+        "Romanian" to TranslateLanguage.ROMANIAN,
+        "Hungarian" to TranslateLanguage.HUNGARIAN,
+        "Swahili" to TranslateLanguage.SWAHILI,
+        "Filipino" to TranslateLanguage.TAGALOG,
+        "Afrikaans" to TranslateLanguage.AFRIKAANS,
+        "Croatian" to TranslateLanguage.CROATIAN,
+        "Bulgarian" to TranslateLanguage.BULGARIAN,
+        "Slovak" to TranslateLanguage.SLOVAK,
+        "Catalan" to TranslateLanguage.CATALAN
     )
 
     val langToSTT = mapOf(
@@ -1095,7 +1186,32 @@ fun SpeechNovaApp(
         "Marathi" to "mr-IN",
         "Gujarati" to "gu-IN",
         "Kannada" to "kn-IN",
-        "Urdu" to "ur-PK"
+        "Urdu" to "ur-PK",
+        "Indonesian" to "id-ID",
+        "Malay" to "ms-MY",
+        "Thai" to "th-TH",
+        "Vietnamese" to "vi-VN",
+        "Turkish" to "tr-TR",
+        "Persian" to "fa-IR",
+        "Hebrew" to "iw-IL",
+        "Dutch" to "nl-NL",
+        "Polish" to "pl-PL",
+        "Ukrainian" to "uk-UA",
+        "Greek" to "el-GR",
+        "Swedish" to "sv-SE",
+        "Danish" to "da-DK",
+        "Norwegian" to "nb-NO",
+        "Finnish" to "fi-FI",
+        "Czech" to "cs-CZ",
+        "Romanian" to "ro-RO",
+        "Hungarian" to "hu-HU",
+        "Swahili" to "sw-KE",
+        "Filipino" to "fil-PH",
+        "Afrikaans" to "af-ZA",
+        "Croatian" to "hr-HR",
+        "Bulgarian" to "bg-BG",
+        "Slovak" to "sk-SK",
+        "Catalan" to "ca-ES"
     )
 
     val langToTTS = mapOf(
@@ -1117,14 +1233,46 @@ fun SpeechNovaApp(
         "Marathi" to Locale.Builder().setLanguage("mr").setRegion("IN").build(),
         "Gujarati" to Locale.Builder().setLanguage("gu").setRegion("IN").build(),
         "Kannada" to Locale.Builder().setLanguage("kn").setRegion("IN").build(),
-        "Urdu" to Locale.Builder().setLanguage("ur").setRegion("PK").build()
+        "Urdu" to Locale.Builder().setLanguage("ur").setRegion("PK").build(),
+        "Indonesian" to Locale.Builder().setLanguage("id").setRegion("ID").build(),
+        "Malay" to Locale.Builder().setLanguage("ms").setRegion("MY").build(),
+        "Thai" to Locale.Builder().setLanguage("th").setRegion("TH").build(),
+        "Vietnamese" to Locale.Builder().setLanguage("vi").setRegion("VN").build(),
+        "Turkish" to Locale.Builder().setLanguage("tr").setRegion("TR").build(),
+        "Persian" to Locale.Builder().setLanguage("fa").setRegion("IR").build(),
+        "Hebrew" to Locale.Builder().setLanguage("iw").setRegion("IL").build(),
+        "Dutch" to Locale.Builder().setLanguage("nl").setRegion("NL").build(),
+        "Polish" to Locale.Builder().setLanguage("pl").setRegion("PL").build(),
+        "Ukrainian" to Locale.Builder().setLanguage("uk").setRegion("UA").build(),
+        "Greek" to Locale.Builder().setLanguage("el").setRegion("GR").build(),
+        "Swedish" to Locale.Builder().setLanguage("sv").setRegion("SE").build(),
+        "Danish" to Locale.Builder().setLanguage("da").setRegion("DK").build(),
+        "Norwegian" to Locale.Builder().setLanguage("nb").setRegion("NO").build(),
+        "Finnish" to Locale.Builder().setLanguage("fi").setRegion("FI").build(),
+        "Czech" to Locale.Builder().setLanguage("cs").setRegion("CZ").build(),
+        "Romanian" to Locale.Builder().setLanguage("ro").setRegion("RO").build(),
+        "Hungarian" to Locale.Builder().setLanguage("hu").setRegion("HU").build(),
+        "Swahili" to Locale.Builder().setLanguage("sw").setRegion("KE").build(),
+        "Filipino" to Locale.Builder().setLanguage("fil").setRegion("PH").build(),
+        "Afrikaans" to Locale.Builder().setLanguage("af").setRegion("ZA").build(),
+        "Croatian" to Locale.Builder().setLanguage("hr").setRegion("HR").build(),
+        "Bulgarian" to Locale.Builder().setLanguage("bg").setRegion("BG").build(),
+        "Slovak" to Locale.Builder().setLanguage("sk").setRegion("SK").build(),
+        "Catalan" to Locale.Builder().setLanguage("ca").setRegion("ES").build()
     )
 
+    // Indian languages first — this app's main audience — then the rest
+    // alphabetically so a long list stays scannable.
     val langList = listOf(
         "Hindi", "Bengali", "Tamil", "Telugu", "Marathi",
         "Gujarati", "Kannada", "Urdu",
-        "English", "Spanish", "French", "German", "Chinese",
-        "Japanese", "Korean", "Arabic", "Russian", "Portuguese", "Italian"
+        "English",
+        "Afrikaans", "Arabic", "Bulgarian", "Catalan", "Chinese", "Croatian",
+        "Czech", "Danish", "Dutch", "Filipino", "Finnish", "French", "German",
+        "Greek", "Hebrew", "Hungarian", "Indonesian", "Italian", "Japanese",
+        "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese",
+        "Romanian", "Russian", "Slovak", "Spanish", "Swahili", "Swedish",
+        "Thai", "Turkish", "Ukrainian", "Vietnamese"
     )
 
     // Function to select appropriate voice (male/female/romantic)
@@ -1132,7 +1280,8 @@ fun SpeechNovaApp(
         val locale = langToTTS[targetLang] ?: Locale.US
         tts?.language = locale
 
-        val selectedVoice = pickBestVoice(tts?.voices, locale, useFemaleVoice)
+        val selectedVoice =
+            pickBestVoice(tts?.voices, locale, useFemaleVoice, isOnline(context))
 
         if (selectedVoice != null) {
             tts?.voice = selectedVoice
@@ -1678,6 +1827,11 @@ fun SpeechNovaApp(
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra("android.speech.extra.DICTATION_MODE", true)
+            // Without this the recognizer streams audio to Google's servers
+            // and just fails when there's no network. Only asked for when
+            // actually offline: preferring offline while online would give up
+            // the better online model for nothing.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
             }
@@ -1757,6 +1911,10 @@ fun SpeechNovaApp(
                                         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                                         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                                         putExtra("android.speech.extra.DICTATION_MODE", true)
+                                        putExtra(
+                                            RecognizerIntent.EXTRA_PREFER_OFFLINE,
+                                            !isOnline(context)
+                                        )
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                             putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                                         }
@@ -1833,6 +1991,7 @@ fun SpeechNovaApp(
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                     putExtra("android.speech.extra.DICTATION_MODE", true)
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                     }
@@ -2032,13 +2191,19 @@ fun SpeechNovaApp(
         vocabLoadedLang = lang
         practiceResult = null
         vocabulary.clear()
+        // The learner's own words sit alongside the built-in list, so anything
+        // they added is practised and quizzed exactly like the rest.
+        val custom = Progress.customWords(context, lang)
         if (lang == "English") {
             vocabulary.addAll(vocabularyMaster.map { VocabItem(it, it, "") })
+            vocabulary.addAll(custom.map { VocabItem(it.english, it.english, "") })
             vocabLoading = false
             return
         }
         vocabLoading = true
         vocabulary.addAll(vocabularyMaster.map { VocabItem(it, "", "") })
+        // These are already translated — they were translated when added.
+        vocabulary.addAll(custom.map { VocabItem(it.english, it.translated, "") })
         val opts = TranslatorOptions.Builder()
             .setSourceLanguage(TranslateLanguage.ENGLISH)
             .setTargetLanguage(langToMLKit[lang] ?: TranslateLanguage.HINDI)
@@ -2067,6 +2232,125 @@ fun SpeechNovaApp(
                 vocabLoading = false
                 tr.close()
             }
+    }
+
+    // ── QUIZ GAME ──
+    fun refreshLeaderboard() {
+        leaderboard = Progress.leaderboard(context)
+    }
+
+    fun startQuiz() {
+        learnerName = Progress.currentLearner(context)
+        refreshLeaderboard()
+        quizQuestions = buildQuiz(vocabulary)
+        quizIndex = 0
+        quizScore = 0
+        quizChosen = null
+        showQuiz = true
+    }
+
+    /** Scores the tapped option and moves on. The choice is remembered so the
+     *  answer can be shown as right or wrong before the next question. */
+    fun answerQuiz(option: String) {
+        if (quizChosen != null) return // already answered this one
+        quizChosen = option
+        val question = quizQuestions.getOrNull(quizIndex) ?: return
+        if (option == question.correct) {
+            quizScore += QUIZ_POINTS_PER_ANSWER
+        }
+    }
+
+    fun nextQuizQuestion() {
+        quizChosen = null
+        if (quizIndex < quizQuestions.size - 1) {
+            quizIndex++
+        } else {
+            // Round over — bank the points and refresh the board.
+            quizIndex = quizQuestions.size
+            Progress.addPoints(context, quizScore)
+            refreshLeaderboard()
+        }
+    }
+
+    fun saveLearnerName() {
+        val name = nameEntry.trim()
+        if (name.isEmpty()) return
+        Progress.setCurrentLearner(context, name)
+        learnerName = Progress.currentLearner(context)
+        nameEntry = ""
+        refreshLeaderboard()
+    }
+
+    // ── ADD YOUR OWN WORD ──
+    // Translated once, when it is added, so it can be practised offline
+    // afterwards exactly like a built-in word.
+    fun saveNewWord() {
+        val english = newWordEnglish.trim()
+        if (english.isEmpty()) {
+            newWordError = "Type a word first"
+            return
+        }
+        newWordBusy = true
+        newWordError = ""
+
+        fun store(translated: String) {
+            val added = Progress.addCustomWord(
+                context,
+                CustomWord(english = english, language = learnLang, translated = translated)
+            )
+            newWordBusy = false
+            if (!added) {
+                newWordError = "\"$english\" is already in your list"
+                return
+            }
+            newWordTranslated = translated
+            newWordEnglish = ""
+            // Force a rebuild so the new word shows up in the list right away.
+            vocabLoadedLang = ""
+            loadVocabulary(learnLang)
+        }
+
+        if (learnLang == "English") {
+            store(english)
+            return
+        }
+        val code = langToMLKit[learnLang]
+        if (code == null) {
+            newWordBusy = false
+            newWordError = "Can't translate into $learnLang yet"
+            return
+        }
+        val tr = Translation.getClient(
+            TranslatorOptions.Builder()
+                .setSourceLanguage(TranslateLanguage.ENGLISH)
+                .setTargetLanguage(code)
+                .build()
+        )
+        tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
+            .addOnSuccessListener {
+                tr.translate(english)
+                    .addOnSuccessListener { translated ->
+                        store(translated.trim())
+                        tr.close()
+                    }
+                    .addOnFailureListener {
+                        newWordBusy = false
+                        newWordError = "Couldn't translate that word"
+                        tr.close()
+                    }
+            }
+            .addOnFailureListener {
+                newWordBusy = false
+                newWordError =
+                    "The $learnLang language pack isn't downloaded — connect to the internet once and try again"
+                tr.close()
+            }
+    }
+
+    fun deleteCustomWord(english: String) {
+        Progress.removeCustomWord(context, learnLang, english)
+        vocabLoadedLang = ""
+        loadVocabulary(learnLang)
     }
 
     fun stopPractice() {
@@ -2129,6 +2413,7 @@ fun SpeechNovaApp(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[lang] ?: "en-IN")
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
         }
         try {
             sr.startListening(intent)
@@ -2334,7 +2619,19 @@ fun SpeechNovaApp(
                     },
                     onSpeakLetter = { glyph -> speakLetter(glyph, learnLang) },
                     onHearWord = { word -> speakLetter(word, learnLang) },
-                    onPracticeWord = { word -> practiceWord(word, learnLang) }
+                    onPracticeWord = { word -> practiceWord(word, learnLang) },
+                    onPlayQuiz = { startQuiz() },
+                    onAddWord = {
+                        newWordTranslated = ""
+                        newWordError = ""
+                        showAddWord = true
+                    },
+                    customWords = remember(learnLang, vocabulary.size) {
+                        Progress.customWords(context, learnLang)
+                            .map { it.english }
+                            .toSet()
+                    },
+                    onDeleteWord = { word -> deleteCustomWord(word) }
                 )
 
                 Screen.PHRASES -> PhrasesScreenContent(
@@ -2573,7 +2870,12 @@ fun SpeechNovaApp(
                     // engine had quietly fallen back to its robotic default.
                     Spacer(Modifier.height(6.dp))
                     val activeVoice = remember(toLang, useFemaleVoice, showSettings) {
-                        pickBestVoice(tts?.voices, langToTTS[toLang] ?: Locale.US, useFemaleVoice)
+                        pickBestVoice(
+                            tts?.voices,
+                            langToTTS[toLang] ?: Locale.US,
+                            useFemaleVoice,
+                            isOnline(context)
+                        )
                     }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -2636,6 +2938,411 @@ fun SpeechNovaApp(
                                     fontSize = 11.sp
                                 )
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // QUIZ GAME — checks what has actually stuck, and keeps score.
+    // ═══════════════════════════════════════════════════════════
+    if (showQuiz) {
+        Dialog(
+            onDismissRequest = { showQuiz = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .padding(vertical = 16.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "\uD83C\uDFAE $learnLang quiz",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { showQuiz = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Text("\u2715", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    when {
+                        // Asked once per device, then never again.
+                        learnerName == null -> {
+                            Text(
+                                "What shall we call you? This is asked once and stays on this phone \u2014 it is never sent anywhere.",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            OutlinedTextField(
+                                value = nameEntry,
+                                onValueChange = { nameEntry = it.take(20) },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = {
+                                    Text(
+                                        "Your name",
+                                        color = Color.White.copy(alpha = 0.4f)
+                                    )
+                                },
+                                textStyle = LocalTextStyle.current.copy(
+                                    color = Color.White,
+                                    fontSize = 16.sp
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF10b981),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                    cursorColor = Color(0xFF10b981)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Button(
+                                onClick = { saveLearnerName() },
+                                enabled = nameEntry.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF10b981),
+                                    disabledContainerColor = Color(0xFF374151)
+                                )
+                            ) {
+                                Text("Start playing", fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        quizQuestions.isEmpty() -> {
+                            Text(
+                                "There aren't enough words loaded yet to make a quiz. Wait for the word list to finish loading, or add a few of your own words first.",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                        }
+
+                        // Round finished: score, then who's ahead.
+                        quizIndex >= quizQuestions.size -> {
+                            Text("\uD83C\uDF89", fontSize = 44.sp)
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "You scored $quizScore",
+                                color = Color.White,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "out of ${quizQuestions.size * QUIZ_POINTS_PER_ANSWER} this round",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = 13.sp
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                "\uD83C\uDFC6 SCORES ON THIS PHONE",
+                                color = Color(0xFFa5b4fc),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            leaderboard.forEachIndexed { position, learner ->
+                                val isYou = learner.name.equals(learnerName, ignoreCase = true)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        when (position) {
+                                            0 -> "\uD83E\uDD47"
+                                            1 -> "\uD83E\uDD48"
+                                            2 -> "\uD83E\uDD49"
+                                            else -> "  "
+                                        },
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        if (isYou) "${learner.name} (you)" else learner.name,
+                                        color = if (isYou) Color(0xFF6ee7b7) else Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (isYou) FontWeight.Bold else FontWeight.Normal,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "${learner.points}",
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            Button(
+                                onClick = { startQuiz() },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF10b981)
+                                )
+                            ) {
+                                Text("Play again", fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(
+                                onClick = {
+                                    Progress.switchLearner(context)
+                                    learnerName = null
+                                    nameEntry = ""
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    "Someone else wants to play",
+                                    color = Color.White.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+
+                        // A question.
+                        else -> {
+                            val question = quizQuestions[quizIndex]
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "Question ${quizIndex + 1} of ${quizQuestions.size}",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 12.sp
+                                )
+                                Text(
+                                    "$quizScore points",
+                                    color = Color(0xFF6ee7b7),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Text(
+                                "How do you say this in $learnLang?",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 13.sp
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                question.english,
+                                color = Color.White,
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(16.dp))
+
+                            question.options.forEach { option ->
+                                val answered = quizChosen != null
+                                val isCorrect = option == question.correct
+                                val isChosen = option == quizChosen
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable(enabled = !answered) { answerQuiz(option) },
+                                    color = when {
+                                        !answered -> Color(0xFF334155)
+                                        isCorrect -> Color(0xFF065f46)
+                                        isChosen -> Color(0xFF7f1d1d)
+                                        else -> Color(0xFF334155)
+                                    },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            option,
+                                            color = Color.White,
+                                            fontSize = 17.sp,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (answered && isCorrect) {
+                                            Text("\u2705", fontSize = 16.sp)
+                                        } else if (answered && isChosen) {
+                                            Text("\u274C", fontSize = 16.sp)
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (quizChosen != null) {
+                                Spacer(Modifier.height(14.dp))
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    Button(
+                                        onClick = { repeatSpeech(question.correct, learnLang) },
+                                        modifier = Modifier.weight(1f).height(46.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF334155)
+                                        )
+                                    ) {
+                                        Text("\uD83D\uDD0A Hear it", fontSize = 14.sp)
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { nextQuizQuestion() },
+                                        modifier = Modifier.weight(1f).height(46.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF6366f1)
+                                        )
+                                    ) {
+                                        Text(
+                                            if (quizIndex < quizQuestions.size - 1) "Next" else "Finish",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ADD YOUR OWN WORD — translated once, then practised offline.
+    // ═══════════════════════════════════════════════════════════
+    if (showAddWord) {
+        Dialog(onDismissRequest = { showAddWord = false }) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        "\u2795 Add your own word",
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Type a word in English. It is translated into $learnLang once and saved, so you can hear it and practise it whenever you like \u2014 with or without internet.",
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newWordEnglish,
+                        onValueChange = { newWordEnglish = it; newWordError = "" },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = {
+                            Text(
+                                "For example: Mother",
+                                color = Color.White.copy(alpha = 0.4f)
+                            )
+                        },
+                        textStyle = LocalTextStyle.current.copy(
+                            color = Color.White,
+                            fontSize = 16.sp
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF10b981),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                            cursorColor = Color(0xFF10b981)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    if (newWordError.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "\u26A0\uFE0F $newWordError",
+                            color = Color(0xFFfca5a5),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
+
+                    if (newWordTranslated.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF0f2e2a),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    newWordTranslated,
+                                    color = Color.White,
+                                    fontSize = 18.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MiniLabeledIcon(emoji = "\uD83D\uDD0A", label = "Hear") {
+                                    repeatSpeech(newWordTranslated, learnLang)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        TextButton(
+                            onClick = {
+                                showAddWord = false
+                                newWordTranslated = ""
+                                newWordError = ""
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Done", color = Color.White.copy(alpha = 0.7f))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { saveNewWord() },
+                            enabled = !newWordBusy && newWordEnglish.isNotBlank(),
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10b981),
+                                disabledContainerColor = Color(0xFF374151)
+                            )
+                        ) {
+                            Text(
+                                if (newWordBusy) "\u23F3 Saving\u2026" else "Add word",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
                         }
                     }
                 }
@@ -2940,11 +3647,14 @@ fun SpeechNovaApp(
                         HelpSection("Learning as you go")
                         HelpStep("17", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
                         HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
-                        HelpStep("19", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("19", "\uD83C\uDFAE Play quiz", "In \uD83D\uDCDA Learn, tap Play quiz. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("20", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
+                        HelpStep("21", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
+                        HelpStep("22", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
 
                         HelpSection("Making it yours")
-                        HelpStep("20", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("21", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("23", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("24", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -3476,7 +4186,11 @@ private fun LearnScreenContent(
     onPickLang: (String) -> Unit,
     onSpeakLetter: (String) -> Unit,
     onHearWord: (String) -> Unit,
-    onPracticeWord: (String) -> Unit
+    onPracticeWord: (String) -> Unit,
+    onPlayQuiz: () -> Unit,
+    onAddWord: () -> Unit,
+    customWords: Set<String>,
+    onDeleteWord: (String) -> Unit
 ) {
     val script = alphabetScriptFor(learnLang)
     Column(
@@ -3666,6 +4380,33 @@ private fun LearnScreenContent(
             fontSize = 12.sp,
             modifier = Modifier.padding(horizontal = 16.dp)
         )
+
+        // The two things a learner can do beyond the fixed list: test what has
+        // actually stuck, and grow the list with words they care about.
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        ) {
+            Button(
+                onClick = onPlayQuiz,
+                modifier = Modifier.weight(1f).height(46.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8b5cf6))
+            ) {
+                Text("\uD83C\uDFAE Play quiz", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = onAddWord,
+                modifier = Modifier.weight(1f).height(46.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0ea5e9))
+            ) {
+                Text("\u2795 Add word", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
         Spacer(Modifier.height(8.dp))
 
         vocabulary.forEach { item ->
@@ -3673,6 +4414,10 @@ private fun LearnScreenContent(
                 item = item,
                 isListening = practicingWord == item.translated && item.translated.isNotEmpty(),
                 result = practiceResult?.takeIf { it.target == item.translated && item.translated.isNotEmpty() },
+                // Only words the learner added can be removed; the built-in
+                // list stays put so the app can't be emptied by accident.
+                isCustom = item.english in customWords,
+                onDelete = { onDeleteWord(item.english) },
                 onHear = { onHearWord(item.translated) },
                 onPractice = { onPracticeWord(item.translated) }
             )
@@ -3687,6 +4432,8 @@ private fun VocabCard(
     item: VocabItem,
     isListening: Boolean,
     result: PracticeResult?,
+    isCustom: Boolean,
+    onDelete: () -> Unit,
     onHear: () -> Unit,
     onPractice: () -> Unit
 ) {
@@ -3701,7 +4448,28 @@ private fun VocabCard(
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(item.english, color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(item.english, color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
+                        if (isCustom) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                color = Color(0xFF0369a1),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    "yours",
+                                    color = Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            IconButton(onClick = onDelete, modifier = Modifier.size(22.dp)) {
+                                Text("\u2715", color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(3.dp))
                     Text(
                         if (ready) item.translated else "…",
