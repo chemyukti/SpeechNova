@@ -221,7 +221,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /** The four top-level destinations reachable from the bottom navigation bar. */
-enum class Screen { HOME, LEARN, PHRASES, FACE2FACE }
+enum class Screen { HOME, LEARN, PHRASES, FACE2FACE, QUIZ }
 
 data class TranslationMessage(
     val displayText: String,
@@ -805,7 +805,8 @@ private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
         Triple(Screen.HOME, "🏠", "Home"),
         Triple(Screen.LEARN, "📚", "Learn"),
         Triple(Screen.PHRASES, "📖", "Phrases"),
-        Triple(Screen.FACE2FACE, "🎭", "Face-to-Face")
+        Triple(Screen.FACE2FACE, "🎭", "Face"),
+        Triple(Screen.QUIZ, "🎮", "Quiz")
     )
     NavigationBar(
         containerColor = Color(0xFF0b1220),
@@ -1073,7 +1074,6 @@ fun SpeechNovaApp(
     var practiceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
     // ── Quiz game & the device's learners ──
-    var showQuiz by remember { mutableStateOf(false) }
     var quizQuestions by remember { mutableStateOf<List<QuizQuestion>>(emptyList()) }
     var quizIndex by remember { mutableIntStateOf(0) }
     var quizScore by remember { mutableIntStateOf(0) }
@@ -2246,7 +2246,6 @@ fun SpeechNovaApp(
         quizIndex = 0
         quizScore = 0
         quizChosen = null
-        showQuiz = true
     }
 
     /** Scores the tapped option and moves on. The choice is remembered so the
@@ -2620,7 +2619,7 @@ fun SpeechNovaApp(
                     onSpeakLetter = { glyph -> speakLetter(glyph, learnLang) },
                     onHearWord = { word -> speakLetter(word, learnLang) },
                     onPracticeWord = { word -> practiceWord(word, learnLang) },
-                    onPlayQuiz = { startQuiz() },
+                    onPlayQuiz = { startQuiz(); currentScreen = Screen.QUIZ },
                     onAddWord = {
                         newWordTranslated = ""
                         newWordError = ""
@@ -2646,344 +2645,13 @@ fun SpeechNovaApp(
                     }
                 )
 
-                Screen.FACE2FACE -> FaceToFaceScreenContent(
-                    fromLang = fromLang,
-                    toLang = toLang,
-                    topBubble = topBubble,
-                    bottomBubble = bottomBubble,
-                    isListening = isFaceListening,
-                    micLevel = micLevel,
-                    onSwapLangs = {
-                        // Just change the languages — the effect above owns the
-                        // recognizer's lifecycle and restarts it in the new
-                        // direction, so the conversation keeps running.
-                        val f = fromLang; fromLang = toLang; toLang = f
-                        learnLang = toLang
-                        topBubble = ""; bottomBubble = ""
-                        downloadModel(fromLang, toLang)
-                    }
-                )
-            }
-        }
-
-        // ── Banner ad (all screens), above the navigation bar ──
-        // It used to sit flush against the nav bar, so a thumb aimed at a tab
-        // and landing slightly high hit the ad. It is now labelled and held
-        // clear of both the content above and the tabs below, so no tap
-        // intended for a control can land on it by accident.
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = Color(0xFF0b1220),
-            shadowElevation = 6.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Deliberately generous below the ad: this dead space is
-                    // what a tap aimed at a nav tab but landing high hits.
-                    .padding(top = 10.dp, bottom = 22.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    "ADVERTISEMENT",
-                    color = Color(0xFF94a3b8),
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.height(6.dp))
-                AndroidView(
-                    modifier = Modifier.fillMaxWidth(),
-                    factory = { ctx ->
-                        AdView(ctx).apply {
-                            setAdSize(AdSize.BANNER)
-                            adUnitId = AD_UNIT_BANNER
-                            loadAd(AdPolicy.request())
-                        }
-                    }
-                )
-            }
-        }
-
-        // ── Bottom navigation ──
-        SpeechNovaBottomBar(current = currentScreen) { target ->
-            // Whenever we change tabs, stop any mic that belongs to the tab we leave.
-            if (target != Screen.FACE2FACE) stopFaceToFaceListening()
-            if (target != Screen.LEARN) stopPractice()
-            if (target != Screen.HOME && isRecording) stopRecording()
-            currentScreen = target
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // FAVORITES DIALOG
-    // ═══════════════════════════════════════════════════════════
-    if (showFavorites) {
-        val favorites = messages.filter { it.type == "translation" && it.isFavorite.value }
-        Dialog(
-            onDismissRequest = { showFavorites = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .heightIn(max = 560.dp)
-                    .padding(vertical = 24.dp),
-                color = Color(0xFF1e293b),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("⭐ Favorites", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        IconButton(onClick = { showFavorites = false }, modifier = Modifier.size(28.dp)) {
-                            Text("✕", color = Color.White, fontSize = 16.sp)
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
-
-                    if (favorites.isEmpty()) {
-                        Text(
-                            "No favorites yet — tap ☆ on any translation to save it here.",
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(vertical = 24.dp)
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 420.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            favorites.forEach { msg ->
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    color = Color(0xFF334155),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        if (msg.originalText.isNotEmpty()) {
-                                            Text(
-                                                msg.originalText,
-                                                color = Color.White.copy(alpha = 0.6f),
-                                                fontSize = 11.sp
-                                            )
-                                            Spacer(Modifier.height(2.dp))
-                                        }
-                                        Text(msg.translatedText, color = Color.White, fontSize = 15.sp)
-                                        Spacer(Modifier.height(6.dp))
-                                        Row {
-                                            MiniLabeledIcon(emoji = "🔊", label = "Listen") {
-                                                repeatSpeech(msg.translatedText, toLang)
-                                            }
-                                            MiniLabeledIcon(emoji = "📋", label = "Copy") {
-                                                copyToClipboard(msg.translatedText)
-                                            }
-                                            MiniLabeledIcon(emoji = "📤", label = "Share") {
-                                                shareText(msg.translatedText)
-                                            }
-                                            MiniLabeledIcon(emoji = "⭐", label = "Remove") {
-                                                msg.isFavorite.value = false
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // SETTINGS DIALOG — every mode explained in plain words.
-    // ═══════════════════════════════════════════════════════════
-    if (showSettings) {
-        Dialog(
-            onDismissRequest = { showSettings = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .heightIn(max = 600.dp)
-                    .padding(vertical = 24.dp),
-                color = Color(0xFF1e293b),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(18.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("⚙️ Settings", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        IconButton(onClick = { showSettings = false }, modifier = Modifier.size(28.dp)) {
-                            Text("✕", color = Color.White, fontSize = 16.sp)
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-
-                    SettingRow(
-                        title = "Learning Mode",
-                        description = "Shows the pronunciation and spelling of every word, so you can learn as you translate.",
-                        checked = learningMode,
-                        onCheckedChange = { learningMode = it },
-                        activeColor = Color(0xFF10b981)
+                Screen.QUIZ -> QuizScreenBody {
+                    Text(
+                        "🎮 $learnLang quiz",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
                     )
-                    SettingRow(
-                        title = "Speak Multiple Sentences",
-                        description = "Keeps listening while you talk, then translates everything together when you tap TRANSLATE — instead of after every sentence.",
-                        checked = recordingMode,
-                        onCheckedChange = { recordingMode = it },
-                        activeColor = Color(0xFFef4444)
-                    )
-                    SettingRow(
-                        title = "Speaking Style: " + if (romanticMode) "Soft & Gentle" else "Normal",
-                        description = "Makes the spoken translation slower and softer — good for calm, warm conversations.",
-                        checked = romanticMode,
-                        onCheckedChange = { romanticMode = it },
-                        activeColor = Color(0xFFec4899)
-                    )
-                    SettingRow(
-                        title = "Speaker Voice: " + if (useFemaleVoice) "Female" else "Male",
-                        description = "Choose whether translations are spoken in a female or male voice.",
-                        checked = useFemaleVoice,
-                        onCheckedChange = { useFemaleVoice = it },
-                        activeColor = Color(0xFFf472b6)
-                    )
-
-                    // Which voice is actually being used, in plain words. How
-                    // human the app sounds is decided almost entirely by what
-                    // the phone has installed, and until now there was no way
-                    // to tell whether a good voice was being picked or the
-                    // engine had quietly fallen back to its robotic default.
-                    Spacer(Modifier.height(6.dp))
-                    val activeVoice = remember(toLang, useFemaleVoice, showSettings) {
-                        pickBestVoice(
-                            tts?.voices,
-                            langToTTS[toLang] ?: Locale.US,
-                            useFemaleVoice,
-                            isOnline(context)
-                        )
-                    }
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = Color(0xFF0f2e2a),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(
-                                "🔈 Voice in use for $toLang",
-                                color = Color(0xFF6ee7b7),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                when {
-                                    activeVoice == null ->
-                                        "Your phone has no $toLang voice installed, so it's using a basic fallback. Tap below to add one — that is the single biggest thing you can do to make it sound human."
-                                    activeVoice.quality >= 500 ->
-                                        "Very high quality — this is the best your phone offers."
-                                    activeVoice.quality >= 400 ->
-                                        "High quality. A better one may be available to download below."
-                                    activeVoice.quality >= 300 ->
-                                        "Normal quality. Your phone can probably sound much better — try downloading a higher-quality $toLang voice below."
-                                    else ->
-                                        "Low quality. This is why it sounds robotic — download a better $toLang voice below."
-                                },
-                                color = Color.White.copy(alpha = 0.8f),
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.height(6.dp))
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                try {
-                                    val ttsSettingsIntent = Intent("com.android.settings.TTS_SETTINGS")
-                                    ttsSettingsIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                    context.startActivity(ttsSettingsIntent)
-                                } catch (_: Exception) { /* no-op */ }
-                            },
-                        color = Color(0xFF334155),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("🎙️", fontSize = 18.sp)
-                            Spacer(Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("More natural voices", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Opens your phone's voice settings so you can download higher-quality voices, if your phone offers them.",
-                                    color = Color.White.copy(alpha = 0.6f),
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // QUIZ GAME — checks what has actually stuck, and keeps score.
-    // ═══════════════════════════════════════════════════════════
-    if (showQuiz) {
-        Dialog(
-            onDismissRequest = { showQuiz = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .padding(vertical = 16.dp),
-                color = Color(0xFF1e293b),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .padding(18.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "\uD83C\uDFAE $learnLang quiz",
-                            color = Color.White,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        IconButton(
-                            onClick = { showQuiz = false },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Text("\u2715", color = Color.White, fontSize = 16.sp)
-                        }
-                    }
                     Spacer(Modifier.height(12.dp))
 
                     when {
@@ -3229,9 +2897,310 @@ fun SpeechNovaApp(
                         }
                     }
                 }
+
+                Screen.FACE2FACE -> FaceToFaceScreenContent(
+                    fromLang = fromLang,
+                    toLang = toLang,
+                    topBubble = topBubble,
+                    bottomBubble = bottomBubble,
+                    isListening = isFaceListening,
+                    micLevel = micLevel,
+                    onSwapLangs = {
+                        // Just change the languages — the effect above owns the
+                        // recognizer's lifecycle and restarts it in the new
+                        // direction, so the conversation keeps running.
+                        val f = fromLang; fromLang = toLang; toLang = f
+                        learnLang = toLang
+                        topBubble = ""; bottomBubble = ""
+                        downloadModel(fromLang, toLang)
+                    }
+                )
+            }
+        }
+
+        // ── Banner ad (all screens), above the navigation bar ──
+        // It used to sit flush against the nav bar, so a thumb aimed at a tab
+        // and landing slightly high hit the ad. It is now labelled and held
+        // clear of both the content above and the tabs below, so no tap
+        // intended for a control can land on it by accident.
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF0b1220),
+            shadowElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Deliberately generous below the ad: this dead space is
+                    // what a tap aimed at a nav tab but landing high hits.
+                    .padding(top = 10.dp, bottom = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "ADVERTISEMENT",
+                    color = Color(0xFF94a3b8),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(6.dp))
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth(),
+                    factory = { ctx ->
+                        AdView(ctx).apply {
+                            setAdSize(AdSize.BANNER)
+                            adUnitId = AD_UNIT_BANNER
+                            loadAd(AdPolicy.request())
+                        }
+                    }
+                )
+            }
+        }
+
+        // ── Bottom navigation ──
+        SpeechNovaBottomBar(current = currentScreen) { target ->
+            // Whenever we change tabs, stop any mic that belongs to the tab we leave.
+            if (target != Screen.FACE2FACE) stopFaceToFaceListening()
+            if (target != Screen.LEARN) stopPractice()
+            if (target != Screen.HOME && isRecording) stopRecording()
+            // Arriving on the Quiz tab always starts a fresh round rather than
+            // dropping the player back into a half-finished one.
+            if (target == Screen.QUIZ && currentScreen != Screen.QUIZ) startQuiz()
+            currentScreen = target
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FAVORITES DIALOG
+    // ═══════════════════════════════════════════════════════════
+    if (showFavorites) {
+        val favorites = messages.filter { it.type == "translation" && it.isFavorite.value }
+        Dialog(
+            onDismissRequest = { showFavorites = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .heightIn(max = 560.dp)
+                    .padding(vertical = 24.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⭐ Favorites", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        IconButton(onClick = { showFavorites = false }, modifier = Modifier.size(28.dp)) {
+                            Text("✕", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    if (favorites.isEmpty()) {
+                        Text(
+                            "No favorites yet — tap ☆ on any translation to save it here.",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(vertical = 24.dp)
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            favorites.forEach { msg ->
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    color = Color(0xFF334155),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        if (msg.originalText.isNotEmpty()) {
+                                            Text(
+                                                msg.originalText,
+                                                color = Color.White.copy(alpha = 0.6f),
+                                                fontSize = 11.sp
+                                            )
+                                            Spacer(Modifier.height(2.dp))
+                                        }
+                                        Text(msg.translatedText, color = Color.White, fontSize = 15.sp)
+                                        Spacer(Modifier.height(6.dp))
+                                        Row {
+                                            MiniLabeledIcon(emoji = "🔊", label = "Listen") {
+                                                repeatSpeech(msg.translatedText, toLang)
+                                            }
+                                            MiniLabeledIcon(emoji = "📋", label = "Copy") {
+                                                copyToClipboard(msg.translatedText)
+                                            }
+                                            MiniLabeledIcon(emoji = "📤", label = "Share") {
+                                                shareText(msg.translatedText)
+                                            }
+                                            MiniLabeledIcon(emoji = "⭐", label = "Remove") {
+                                                msg.isFavorite.value = false
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // SETTINGS DIALOG — every mode explained in plain words.
+    // ═══════════════════════════════════════════════════════════
+    if (showSettings) {
+        Dialog(
+            onDismissRequest = { showSettings = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .heightIn(max = 600.dp)
+                    .padding(vertical = 24.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(18.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⚙️ Settings", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        IconButton(onClick = { showSettings = false }, modifier = Modifier.size(28.dp)) {
+                            Text("✕", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    SettingRow(
+                        title = "Learning Mode",
+                        description = "Shows the pronunciation and spelling of every word, so you can learn as you translate.",
+                        checked = learningMode,
+                        onCheckedChange = { learningMode = it },
+                        activeColor = Color(0xFF10b981)
+                    )
+                    SettingRow(
+                        title = "Speak Multiple Sentences",
+                        description = "Keeps listening while you talk, then translates everything together when you tap TRANSLATE — instead of after every sentence.",
+                        checked = recordingMode,
+                        onCheckedChange = { recordingMode = it },
+                        activeColor = Color(0xFFef4444)
+                    )
+                    SettingRow(
+                        title = "Speaking Style: " + if (romanticMode) "Soft & Gentle" else "Normal",
+                        description = "Makes the spoken translation slower and softer — good for calm, warm conversations.",
+                        checked = romanticMode,
+                        onCheckedChange = { romanticMode = it },
+                        activeColor = Color(0xFFec4899)
+                    )
+                    SettingRow(
+                        title = "Speaker Voice: " + if (useFemaleVoice) "Female" else "Male",
+                        description = "Choose whether translations are spoken in a female or male voice.",
+                        checked = useFemaleVoice,
+                        onCheckedChange = { useFemaleVoice = it },
+                        activeColor = Color(0xFFf472b6)
+                    )
+
+                    // Which voice is actually being used, in plain words. How
+                    // human the app sounds is decided almost entirely by what
+                    // the phone has installed, and until now there was no way
+                    // to tell whether a good voice was being picked or the
+                    // engine had quietly fallen back to its robotic default.
+                    Spacer(Modifier.height(6.dp))
+                    val activeVoice = remember(toLang, useFemaleVoice, showSettings) {
+                        pickBestVoice(
+                            tts?.voices,
+                            langToTTS[toLang] ?: Locale.US,
+                            useFemaleVoice,
+                            isOnline(context)
+                        )
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF0f2e2a),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                "🔈 Voice in use for $toLang",
+                                color = Color(0xFF6ee7b7),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                when {
+                                    activeVoice == null ->
+                                        "Your phone has no $toLang voice installed, so it's using a basic fallback. Tap below to add one — that is the single biggest thing you can do to make it sound human."
+                                    activeVoice.quality >= 500 ->
+                                        "Very high quality — this is the best your phone offers."
+                                    activeVoice.quality >= 400 ->
+                                        "High quality. A better one may be available to download below."
+                                    activeVoice.quality >= 300 ->
+                                        "Normal quality. Your phone can probably sound much better — try downloading a higher-quality $toLang voice below."
+                                    else ->
+                                        "Low quality. This is why it sounds robotic — download a better $toLang voice below."
+                                },
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                try {
+                                    val ttsSettingsIntent = Intent("com.android.settings.TTS_SETTINGS")
+                                    ttsSettingsIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    context.startActivity(ttsSettingsIntent)
+                                } catch (_: Exception) { /* no-op */ }
+                            },
+                        color = Color(0xFF334155),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🎙️", fontSize = 18.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("More natural voices", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Opens your phone's voice settings so you can download higher-quality voices, if your phone offers them.",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
 
     // ═══════════════════════════════════════════════════════════
     // ADD YOUR OWN WORD — translated once, then practised offline.
@@ -3621,7 +3590,7 @@ fun SpeechNovaApp(
                             .verticalScroll(rememberScrollState())
                     ) {
                         HelpSection("Getting started")
-                        HelpStep("1", "Four simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, and 🎭 Face-to-Face for talking with someone.")
+                        HelpStep("1", "Five simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
                         HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works even with no internet.")
 
@@ -3647,7 +3616,7 @@ fun SpeechNovaApp(
                         HelpSection("Learning as you go")
                         HelpStep("17", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
                         HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
-                        HelpStep("19", "\uD83C\uDFAE Play quiz", "In \uD83D\uDCDA Learn, tap Play quiz. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("19", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
                         HelpStep("20", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
                         HelpStep("21", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
                         HelpStep("22", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
@@ -3672,6 +3641,21 @@ fun SpeechNovaApp(
             }
         }
     }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// SCREEN: QUIZ (checks what has actually stuck, and keeps score)
+// ══════════════════════════════════════════════════════════════════════════
+@Composable
+private fun QuizScreenBody(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(18.dp),
+        content = content
+    )
 }
 
 // ══════════════════════════════════════════════════════════════════════════
