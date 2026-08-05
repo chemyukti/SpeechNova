@@ -45,6 +45,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -111,6 +112,31 @@ private const val APP_PACKAGE = "com.parashmani.speechnova"
 // there is no rewarded unit here and no gate for one to sit behind.
 private const val AD_UNIT_BANNER = "ca-app-pub-8499432704301966/9196802502"
 private const val AD_UNIT_NATIVE = "ca-app-pub-8499432704301966/9457225173"
+
+
+// ── How long a pause counts as "finished talking" ──────────────────────────
+// Android's default endpointing is tuned for dictating into a search box: it
+// cuts you off fast, because a query is short and the cost of waiting is a
+// sluggish-feeling box. Both of those are wrong here.
+//
+// In Face-to-Face the phone lies on a table between two people who pause to
+// think mid-sentence, and being cut off after half a beat is exactly what
+// makes a translator feel like it isn't listening. These give a talker room
+// to breathe without making the reply feel slow.
+
+/** Silence that ends a turn once the recognizer thinks it heard a sentence. */
+private const val SPEECH_COMPLETE_SILENCE_MS = 1500L
+
+/** Silence that ends a turn when the sentence may still be going. Longer,
+ *  because cutting someone off mid-thought is the worse mistake. */
+private const val SPEECH_POSSIBLY_COMPLETE_SILENCE_MS = 2000L
+
+/** Never end a turn before this, so a breath isn't taken as the whole answer. */
+private const val SPEECH_MINIMUM_LENGTH_MS = 1200L
+
+/** Practice mode is one word, so it can settle much sooner. */
+private const val PRACTICE_COMPLETE_SILENCE_MS = 900L
+private const val PRACTICE_MINIMUM_LENGTH_MS = 500L
 
 // ── Face-to-Face echo control ──────────────────────────────────────────────
 // Face-to-Face speaks the translation out of the same phone that is listening
@@ -960,7 +986,10 @@ private fun buildQuiz(words: List<VocabItem>): List<QuizQuestion> {
 data class PracticeResult(
     val target: String,   // the word the learner was asked to say
     val correct: Boolean,
-    val heard: String     // what speech recognition actually understood
+    val heard: String,    // what speech recognition actually understood
+    // Syllable-by-syllable coaching for scripts that have an akshara
+    // structure to analyse. Null elsewhere, and the plain right/wrong stands.
+    val report: PronunciationReport? = null
 )
 
 // A short, high-utility set of everyday words. Kept in English and translated
@@ -1832,6 +1861,18 @@ fun SpeechNovaApp(
             // actually offline: preferring offline while online would give up
             // the better online model for nothing.
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_COMPLETE_SILENCE_MS
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                SPEECH_MINIMUM_LENGTH_MS
+            )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
             }
@@ -1915,6 +1956,18 @@ fun SpeechNovaApp(
                                             RecognizerIntent.EXTRA_PREFER_OFFLINE,
                                             !isOnline(context)
                                         )
+                                        putExtra(
+                                            RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                                            SPEECH_COMPLETE_SILENCE_MS
+                                        )
+                                        putExtra(
+                                            RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                                            SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
+                                        )
+                                        putExtra(
+                                            RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                                            SPEECH_MINIMUM_LENGTH_MS
+                                        )
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                             putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                                         }
@@ -1992,6 +2045,18 @@ fun SpeechNovaApp(
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                     putExtra("android.speech.extra.DICTATION_MODE", true)
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        SPEECH_COMPLETE_SILENCE_MS
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                        SPEECH_MINIMUM_LENGTH_MS
+                    )
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
                     }
@@ -2395,7 +2460,14 @@ fun SpeechNovaApp(
                     ?.firstOrNull()?.trim().orEmpty()
                 val correct = pronunciationMatches(target, heard, lang)
                 practicingWord = null
-                practiceResult = PracticeResult(target, correct, heard)
+                practiceResult = PracticeResult(
+                    target = target,
+                    correct = correct,
+                    heard = heard,
+                    // Only worth analysing a miss — a learner who got it right
+                    // doesn't need to be told which syllables were fine.
+                    report = if (correct) null else analysePronunciation(target, heard, lang)
+                )
                 if (practiceRecognizer === sr) practiceRecognizer = null
                 sr.destroy()
                 // Always play the correct pronunciation back so they can learn it.
@@ -2413,6 +2485,15 @@ fun SpeechNovaApp(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[lang] ?: "en-IN")
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
+            // One word, so it can settle sooner than a conversation.
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                PRACTICE_COMPLETE_SILENCE_MS
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                PRACTICE_MINIMUM_LENGTH_MS
+            )
         }
         try {
             sr.startListening(intent)
@@ -3615,7 +3696,7 @@ fun SpeechNovaApp(
 
                         HelpSection("Learning as you go")
                         HelpStep("17", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself — the app listens and tells you whether you got it right.")
+                        HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
                         HelpStep("19", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
                         HelpStep("20", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
                         HelpStep("21", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
@@ -4505,6 +4586,72 @@ private fun VocabCard(
                             color = Color.White.copy(alpha = 0.7f),
                             fontSize = 12.sp
                         )
+
+                        val report = result.report
+                        if (report != null && report.perAkshara.isNotEmpty()) {
+                            // Syllable by syllable, so the learner can see
+                            // exactly where it went wrong rather than being
+                            // told the whole word was bad.
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                            ) {
+                                report.perAkshara.forEach { part ->
+                                    Surface(
+                                        color = if (part.correct) Color(0xFF065f46) else Color(0xFF7f1d1d),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.padding(end = 6.dp)
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.padding(
+                                                horizontal = 10.dp,
+                                                vertical = 6.dp
+                                            )
+                                        ) {
+                                            Text(
+                                                part.expected,
+                                                color = Color.White,
+                                                fontSize = 20.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                if (part.correct) "✓" else "✕",
+                                                color = if (part.correct) {
+                                                    Color(0xFF6ee7b7)
+                                                } else {
+                                                    Color(0xFFfca5a5)
+                                                },
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // One tip at a time. Three at once teaches none.
+                            val headline = report.headline
+                            if (headline != null) {
+                                Spacer(Modifier.height(8.dp))
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF1e3a5f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text(
+                                        "💡 $headline",
+                                        color = Color(0xFFbfdbfe),
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             "Tap 🔊 to hear the correct pronunciation and try again.",
                             color = Color.White.copy(alpha = 0.7f),
