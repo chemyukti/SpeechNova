@@ -2566,6 +2566,48 @@ fun SpeechNovaApp(
                         activeColor = Color(0xFFf472b6)
                     )
 
+                    // Which voice is actually being used, in plain words. How
+                    // human the app sounds is decided almost entirely by what
+                    // the phone has installed, and until now there was no way
+                    // to tell whether a good voice was being picked or the
+                    // engine had quietly fallen back to its robotic default.
+                    Spacer(Modifier.height(6.dp))
+                    val activeVoice = remember(toLang, useFemaleVoice, showSettings) {
+                        pickBestVoice(tts?.voices, langToTTS[toLang] ?: Locale.US, useFemaleVoice)
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF0f2e2a),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                "🔈 Voice in use for $toLang",
+                                color = Color(0xFF6ee7b7),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                when {
+                                    activeVoice == null ->
+                                        "Your phone has no $toLang voice installed, so it's using a basic fallback. Tap below to add one — that is the single biggest thing you can do to make it sound human."
+                                    activeVoice.quality >= 500 ->
+                                        "Very high quality — this is the best your phone offers."
+                                    activeVoice.quality >= 400 ->
+                                        "High quality. A better one may be available to download below."
+                                    activeVoice.quality >= 300 ->
+                                        "Normal quality. Your phone can probably sound much better — try downloading a higher-quality $toLang voice below."
+                                    else ->
+                                        "Low quality. This is why it sounds robotic — download a better $toLang voice below."
+                                },
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+
                     Spacer(Modifier.height(6.dp))
                     Surface(
                         modifier = Modifier
