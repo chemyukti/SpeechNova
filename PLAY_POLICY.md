@@ -1,6 +1,6 @@
 # Play Console — ads compliance for SpeechNova
 
-Two rejections in a row, both about ads:
+Three rejections, all about ads:
 
 | Version code | Issue | Cause |
 | --- | --- | --- |
@@ -8,7 +8,7 @@ Two rejections in a row, both about ads:
 | 8 | Families Ad Format Requirements — unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
 | 10 | Families Ad Format Requirements — multiple ads per page | The Learn screen carried a native card while the banner sits on every screen |
 
-The second notice is the important one: the **Families Policy Requirements
+The version 8 notice is the important one: the **Families Policy Requirements
 apply to this app**, which means its Play listing declares an audience that
 includes children. That is a much stricter regime than the content-rating fix
 alone assumed.
@@ -25,7 +25,6 @@ alone assumed.
 | One ad per page | **Native ad removed entirely.** One banner, in one place, is the only arrangement that cannot accidentally put two ads on a page |
 | Ads must be clearly distinguishable from app content | Prominent "ADVERTISEMENT" label above the banner |
 | No design that produces inadvertent clicks | Close button moved off the ad and enlarged to 48dp; banner separated from the nav bar |
-| Ads must not start sound on their own | Native video creatives start muted |
 | Certified ads SDK | Google Mobile Ads, bumped 23.0.0 → 23.6.0 |
 
 ## Code side — done in this branch
@@ -39,7 +38,7 @@ request is built through `AdPolicy.request()` so none can bypass it.
 target-audience answers in Play Console → Policy → App content. If the listing
 is ever narrowed to adults only, revisit the `AD_ID` removal at the same time.
 
-`versionCode` is **9** — 7 and 8 are both burnt and can never be re-uploaded.
+`versionCode` is **11** — 7, 8 and 10 are all burnt and can never be re-uploaded.
 
 ## Console side — must be done by hand before resubmitting
 
