@@ -935,6 +935,9 @@ fun SpeechNovaApp(
     // ── Offline language packs ──
     var showOfflinePacks by remember { mutableStateOf(false) }
     var showOfflineGuide by remember { mutableStateOf(false) }
+    // The steps for adding a voice pack, shown right before the user is handed
+    // over to the phone's Settings app.
+    var showVoiceSteps by remember { mutableStateOf(false) }
     // Shown the moment the connection drops — the one moment this advice is
     // actually useful. Once per run at most, and never again once dismissed
     // for good.
@@ -3201,16 +3204,8 @@ fun SpeechNovaApp(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                val tag = langToSTT[fromLang] ?: "en-IN"
-                                val asked = SpeechPacks.triggerDownload(context, tag)
-                                if (asked) {
-                                    status =
-                                        "📥 Asked your phone to download offline voice input for $fromLang"
-                                } else if (!SpeechPacks.openVoiceInputSettings(context)) {
-                                    status =
-                                        "Open Settings → System → Languages & input → Voice input to add $fromLang"
-                                }
                                 showSettings = false
+                                showVoiceSteps = true
                             },
                         color = Color(0xFF334155),
                         shape = RoundedCornerShape(12.dp)
@@ -3511,6 +3506,158 @@ fun SpeechNovaApp(
     }
 
     // ═══════════════════════════════════════════════════════════
+    // VOICE PACK STEPS
+    //
+    // Shown at the moment the user asks to add a voice pack, because the next
+    // thing that happens is the phone's Settings app taking over the screen
+    // and this app going to the background. Instructions left behind in a
+    // dialog are no use once you are four levels deep in someone else's menu,
+    // so the steps are read here first and repeated in a toast, which draws
+    // over Settings and is the only thing this app can still put in front of
+    // them once they have left.
+    // ═══════════════════════════════════════════════════════════
+    if (showVoiceSteps) {
+        val onAndroid13 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        Dialog(
+            onDismissRequest = { showVoiceSteps = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .padding(vertical = 16.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(18.dp)
+                ) {
+                    Text(
+                        "🎙️ Adding $fromLang voice input",
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    if (onAndroid13) {
+                        Text(
+                            "Your phone can do this itself. Tap the button below and it will start downloading in the background — you don't have to go anywhere.",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "If nothing happens after a few minutes, use the manual steps below instead.",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    } else {
+                        Text(
+                            "Your phone needs you to do this yourself. The next screen is your phone's own Settings, so these steps are also shown as a message on top of it — you don't have to remember them.",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF0f2e2a),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            listOf(
+                                "Make sure wifi is on. This is a download.",
+                                "Tap Voice input, or Google Voice Typing.",
+                                "Tap Google, or Speech Services by Google. If there's a gear icon next to it, tap that.",
+                                "Tap Offline speech recognition. Some phones call it Languages.",
+                                "Open the ALL tab, find $fromLang, and tap Download.",
+                                "Come back here and try the microphone."
+                            ).forEachIndexed { index, step ->
+                                Row(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Text(
+                                        "${index + 1}.",
+                                        color = Color(0xFF6ee7b7),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.width(22.dp)
+                                    )
+                                    Text(
+                                        step,
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "On Samsung phones the path is General management, then Language and input, then On-screen keyboard.",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = {
+                            val tag = langToSTT[fromLang] ?: "en-IN"
+                            showVoiceSteps = false
+                            val asked = SpeechPacks.triggerDownload(context, tag)
+                            if (asked) {
+                                status = "📥 Downloading $fromLang voice input in the background"
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Downloading $fromLang voice input. This can take a few minutes.",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                // Drawn over the Settings app, so the path is
+                                // in front of them while they navigate it.
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Voice input → Google → Offline speech recognition → ALL → $fromLang",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                                if (!SpeechPacks.openVoiceInputSettings(context)) {
+                                    status =
+                                        "Open Settings → System → Languages & input → Voice input"
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10b981))
+                    ) {
+                        Text(
+                            if (onAndroid13) "Download it now" else "Open phone settings",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = { showVoiceSteps = false },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Not now", color = Color.White.copy(alpha = 0.6f))
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // JUST WENT OFFLINE
     //
     // Caught at the moment the connection drops, which is the only moment this
@@ -3699,11 +3846,8 @@ fun SpeechNovaApp(
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = {
-                                val tag = langToSTT[fromLang] ?: "en-IN"
-                                val asked = SpeechPacks.triggerDownload(context, tag)
-                                if (!asked && !SpeechPacks.openVoiceInputSettings(context)) {
-                                    status = "Open your phone's Settings and follow the steps above"
-                                }
+                                showOfflineGuide = false
+                                showVoiceSteps = true
                             },
                             modifier = Modifier.fillMaxWidth().height(48.dp),
                             shape = RoundedCornerShape(12.dp),
