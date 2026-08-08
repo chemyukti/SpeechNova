@@ -934,6 +934,7 @@ fun SpeechNovaApp(
 
     // ── Offline language packs ──
     var showOfflinePacks by remember { mutableStateOf(false) }
+    var showOfflineGuide by remember { mutableStateOf(false) }
     var downloadedPacks by remember { mutableStateOf<Set<String>>(emptySet()) }
     var packBusy by remember { mutableStateOf<String?>(null) }
     var pastedText by remember { mutableStateOf("") }
@@ -1540,9 +1541,9 @@ fun SpeechNovaApp(
             messages.add(
                 TranslationMessage(
                     displayText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Connect to the internet once and open ⚙️ Settings → Offline voice input to download it."
+                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Connect to the internet once and open ⚙️ Settings → Set up offline use for the steps."
                     } else {
-                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Open ⚙️ Settings → Offline voice input for how to add it."
+                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Open ⚙️ Settings → Set up offline use for the steps."
                     },
                     type = "system"
                 )
@@ -3132,6 +3133,41 @@ fun SpeechNovaApp(
                         activeColor = Color(0xFFf472b6)
                     )
 
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showSettings = false
+                                showOfflineGuide = true
+                            },
+                        color = Color(0xFF0f2e2a),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🌐", fontSize = 18.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Set up offline use",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Two things have to be downloaded before the app works with no internet. Step-by-step instructions for both.",
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                            Text("›", color = Color.White, fontSize = 20.sp)
+                        }
+                    }
+
                     // Voice input is a *separate* download from the ML Kit
                     // translation packs, owned by the phone's speech service.
                     // Having every translation pack and still not being heard
@@ -3448,6 +3484,162 @@ fun SpeechNovaApp(
                 }
             }
         )
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // SET UP OFFLINE USE
+    //
+    // Working offline needs two separate downloads that people reasonably
+    // assume are one thing: ML Kit's translation packs, which this app can
+    // fetch, and the phone's own voice-input models, which it cannot. Having
+    // all of the first and none of the second is what makes English work
+    // offline while every other language beeps and hears nothing — so the two
+    // are spelled out separately here, with the manual steps written out.
+    // ═══════════════════════════════════════════════════════════
+    if (showOfflineGuide) {
+        Dialog(
+            onDismissRequest = { showOfflineGuide = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .fillMaxHeight(0.9f)
+                    .padding(vertical = 16.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize().padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "🌐 Using SpeechNova offline",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { showOfflineGuide = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Text("✕", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Two separate things have to be on your phone. Most people have the first and not the second — that is why English works offline and other languages don't.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        HelpSection("1. Translation packs — the app does this")
+                        HelpStep(
+                            "1",
+                            "Open ⚙️ Settings → 📦 Offline languages",
+                            "Download a pack for every language you want to use. This one is inside SpeechNova — no phone settings involved."
+                        )
+                        HelpStep(
+                            "2",
+                            "Remember: two languages, two packs",
+                            "Translation always goes through English, so $fromLang → $toLang needs a pack for each of them. English itself is built in and needs nothing."
+                        )
+
+                        HelpSection("2. Voice input — you must do this yourself")
+                        Text(
+                            "The microphone uses your phone's own speech recognition, not SpeechNova's. English is installed on nearly every phone; most other languages are not, and no app can install them for you. Without it, tapping the microphone offline just beeps and hears nothing.",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                        HelpStep(
+                            "1",
+                            "Connect to wifi first",
+                            "These are downloads. They cannot be fetched once you're already offline — do this before you travel."
+                        )
+                        HelpStep(
+                            "2",
+                            "Open your phone's Settings app",
+                            "Not SpeechNova's settings — the phone's own, the grey gear icon."
+                        )
+                        HelpStep(
+                            "3",
+                            "Find Voice input",
+                            "Usually: System → Languages & input → Voice input. On Samsung phones: General management → Language and input → On-screen keyboard → Google Voice Typing."
+                        )
+                        HelpStep(
+                            "4",
+                            "Tap Google, or Speech Services by Google",
+                            "If there is a gear ⚙ next to it, tap that instead."
+                        )
+                        HelpStep(
+                            "5",
+                            "Tap Offline speech recognition",
+                            "Some phones call it \"Languages\" or \"Download languages\"."
+                        )
+                        HelpStep(
+                            "6",
+                            "Open the ALL tab and download your language",
+                            "Find $fromLang, tap it, and wait for the download to finish. Repeat for every language you want to speak offline."
+                        )
+                        HelpStep(
+                            "7",
+                            "Come back and try the microphone",
+                            "Turn off wifi and mobile data to check it properly. It should now hear you in $fromLang with no connection."
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                val tag = langToSTT[fromLang] ?: "en-IN"
+                                val asked = SpeechPacks.triggerDownload(context, tag)
+                                if (!asked && !SpeechPacks.openVoiceInputSettings(context)) {
+                                    status = "Open your phone's Settings and follow the steps above"
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10b981)
+                            )
+                        ) {
+                            Text(
+                                "Open voice input settings",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Text(
+                            "On Android 13 and newer this asks your phone to download it directly. On older phones it opens the settings screen — the steps above tell you where to go from there.",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { showOfflineGuide = false },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366f1))
+                    ) {
+                        Text("Got it", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
