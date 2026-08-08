@@ -1,12 +1,34 @@
 # Play Console — ads compliance for SpeechNova
 
-Three rejections, all about ads:
+Review history:
 
-| Version code | Issue | Cause |
+| Version code | Outcome | Cause |
 | --- | --- | --- |
-| 7 | Ad Content — inconsistent with the app's content rating | SDK was free to serve up to a mature (MA) rating |
-| 8 | Families Ad Format Requirements — unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
-| 10 | Families Ad Format Requirements — multiple ads per page | The Learn screen carried a native card while the banner sits on every screen |
+| 7 | Rejected — ad content inconsistent with the content rating | SDK was free to serve up to a mature (MA) rating |
+| 8 | Rejected — Families ad format, unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
+| 9 | **Accepted** | Rewarded ad removed. Still carried banner *and* native — see below |
+| 10 | Rejected — Families ad format, multiple ads per page | The Learn screen carried a native card while the banner sits on every screen |
+| 11 | — | Native ad removed; one banner, app-wide |
+
+### The most important thing in this table
+
+**Versions 9 and 10 had the same two-ad layout. One passed review, the other
+did not.**
+
+Review is carried out by a mix of automated checks and human reviewers, and it
+is not deterministic. A build passing is evidence that the violation was not
+*caught*, not evidence that it was not *present*. Version 9 shipped two ads on
+the Learn page and got through; version 10 did the same thing and was rejected
+for exactly that.
+
+Two consequences worth holding on to:
+
+- **Do not reinstate a format because an older build survived with it.** The
+  native ad was a violation in version 9 too. It was simply missed.
+- **Acceptance is not permanent.** A published app can be pulled or suspended
+  later if a violation is found after the fact, and repeated ad-format findings
+  escalate toward account-level enforcement rather than a single blocked
+  release. Being live is not immunity.
 
 The version 8 notice is the important one: the **Families Policy Requirements
 apply to this app**, which means its Play listing declares an audience that
@@ -38,7 +60,8 @@ request is built through `AdPolicy.request()` so none can bypass it.
 target-audience answers in Play Console → Policy → App content. If the listing
 is ever narrowed to adults only, revisit the `AD_ID` removal at the same time.
 
-`versionCode` is **11** — 7, 8 and 10 are all burnt and can never be re-uploaded.
+`versionCode` is **11** — 7, 8 and 10 were rejected, 9 is the version currently
+live, and none of those numbers can ever be re-uploaded.
 
 ## Console side — must be done by hand before resubmitting
 
