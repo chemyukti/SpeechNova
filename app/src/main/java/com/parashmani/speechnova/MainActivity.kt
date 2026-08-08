@@ -935,6 +935,11 @@ fun SpeechNovaApp(
     // ── Offline language packs ──
     var showOfflinePacks by remember { mutableStateOf(false) }
     var showOfflineGuide by remember { mutableStateOf(false) }
+    // Shown the moment the connection drops — the one moment this advice is
+    // actually useful. Once per run at most, and never again once dismissed
+    // for good.
+    var showWentOfflinePrompt by remember { mutableStateOf(false) }
+    var offlinePromptShownThisRun by remember { mutableStateOf(false) }
     var downloadedPacks by remember { mutableStateOf<Set<String>>(emptySet()) }
     var packBusy by remember { mutableStateOf<String?>(null) }
     var pastedText by remember { mutableStateOf("") }
@@ -2448,7 +2453,26 @@ fun SpeechNovaApp(
     }
 
     DisposableEffect(Unit) {
+        val stopWatching = watchConnectivity(context) { online ->
+            // Callbacks arrive on a binder thread.
+            handler.post {
+                if (online) return@post
+                if (offlinePromptShownThisRun) return@post
+                if (Progress.offlineTipDismissed(context)) return@post
+                // Only worth interrupting for if the microphone is actually
+                // about to fail: on Android 13+ we can ask, and below that we
+                // can't, so we tell them once rather than stay silent.
+                val tag = langToSTT[fromLang]
+                if (tag == null) return@post
+                SpeechPacks.isInstalledOnDevice(context, tag) { installed ->
+                    if (installed == true) return@isInstalledOnDevice
+                    offlinePromptShownThisRun = true
+                    showWentOfflinePrompt = true
+                }
+            }
+        }
         onDispose {
+            stopWatching()
             isRecording = false
             isSpeaking = false
             tts?.shutdown()
@@ -3481,6 +3505,80 @@ fun SpeechNovaApp(
             dismissButton = {
                 TextButton(onClick = onDismissUpdate) {
                     Text("Later", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // JUST WENT OFFLINE
+    //
+    // Caught at the moment the connection drops, which is the only moment this
+    // advice can still be acted on: the downloads it points at cannot be
+    // fetched once the signal is gone, so telling someone after they have
+    // tapped a dead microphone is too late. Raised only when the voice pack
+    // for the current language is actually missing, at most once per run, and
+    // never again once dismissed for good.
+    // ═══════════════════════════════════════════════════════════
+    if (showWentOfflinePrompt) {
+        AlertDialog(
+            onDismissRequest = { showWentOfflinePrompt = false },
+            containerColor = Color(0xFF1e293b),
+            title = {
+                Text(
+                    "📴 You're offline",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        "Translation will keep working for any language pack you've already downloaded.",
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "But your phone has no offline voice input for $fromLang, so the microphone won't hear you until you're back online. That's a separate download from your phone, not from SpeechNova.",
+                        color = Color(0xFFfbbf24),
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "You can still type or paste text with 📝 Text, and use 📖 Phrases.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showWentOfflinePrompt = false
+                        showOfflineGuide = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10b981))
+                ) {
+                    Text("Show me how", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            Progress.dismissOfflineTip(context)
+                            showWentOfflinePrompt = false
+                        }
+                    ) {
+                        Text("Don't show again", color = Color.White.copy(alpha = 0.5f))
+                    }
+                    TextButton(onClick = { showWentOfflinePrompt = false }) {
+                        Text("OK", color = Color.White.copy(alpha = 0.8f))
+                    }
                 }
             }
         )

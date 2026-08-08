@@ -41,9 +41,20 @@ object Progress {
     private const val KEY_CURRENT = "current_learner"
     private const val KEY_LEARNERS = "learners"
     private const val KEY_WORDS = "custom_words"
+    private const val KEY_OFFLINE_TIP = "offline_tip_dismissed"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    // ── The offline setup reminder ────────────────────────────────────────
+
+    /** Whether the user has told us to stop mentioning offline setup. */
+    fun offlineTipDismissed(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_OFFLINE_TIP, false)
+
+    fun dismissOfflineTip(context: Context) {
+        prefs(context).edit().putBoolean(KEY_OFFLINE_TIP, true).apply()
+    }
 
     // ── Who is playing ────────────────────────────────────────────────────
 
