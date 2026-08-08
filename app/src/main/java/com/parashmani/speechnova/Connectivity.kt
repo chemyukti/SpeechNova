@@ -49,11 +49,22 @@ fun isOnline(context: Context): Boolean = runCatching {
  * Returns a function that unregisters the listener; the caller must call it.
  */
 fun watchConnectivity(context: Context, onChange: (Boolean) -> Unit): () -> Unit {
+    // Named, because a bare `{}` in return position reads as a trailing lambda
+    // to whatever call precedes it.
+    val noUnregister: () -> Unit = {}
+
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        ?: return {}
+        ?: return noUnregister
+
     val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = onChange(true)
-        override fun onLost(network: Network) = onChange(false)
+        override fun onAvailable(network: Network) {
+            onChange(true)
+        }
+
+        override fun onLost(network: Network) {
+            onChange(false)
+        }
+
         override fun onCapabilitiesChanged(
             network: Network,
             caps: NetworkCapabilities
@@ -66,8 +77,13 @@ fun watchConnectivity(context: Context, onChange: (Boolean) -> Unit): () -> Unit
             )
         }
     }
+
     return runCatching {
         cm.registerDefaultNetworkCallback(callback)
-        { runCatching { cm.unregisterNetworkCallback(callback) } }
-    }.getOrDefault({})
+        val unregister: () -> Unit = {
+            runCatching { cm.unregisterNetworkCallback(callback) }
+            Unit
+        }
+        unregister
+    }.getOrDefault(noUnregister)
 }
