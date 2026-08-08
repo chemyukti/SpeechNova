@@ -1523,6 +1523,34 @@ fun SpeechNovaApp(
             }
     }
 
+    // The recognizer beeped and captured nothing while offline. Almost always
+    // this is the phone having no offline speech model for that language:
+    // English ships with one, most others do not, and no amount of ML Kit
+    // translation packs will help because this is the microphone side.
+    var offlineVoiceNoticeFor by remember { mutableStateOf("") }
+
+    fun reportOfflineVoiceMissing(lang: String) {
+        if (isOnline(context)) return           // online, so this was something else
+        if (offlineVoiceNoticeFor == lang) return  // already told them about this one
+        offlineVoiceNoticeFor = lang
+        val tag = langToSTT[lang] ?: return
+        SpeechPacks.isInstalledOnDevice(context, tag) { installed ->
+            if (installed == true) return@isInstalledOnDevice
+            messages.removeAll { it.type == "system" }
+            messages.add(
+                TranslationMessage(
+                    displayText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Connect to the internet once and open ⚙️ Settings → Offline voice input to download it."
+                    } else {
+                        "🎙️ Your phone has no offline voice input for $lang, so the microphone can't hear you without internet — this is separate from the translation packs. Open ⚙️ Settings → Offline voice input for how to add it."
+                    },
+                    type = "system"
+                )
+            )
+            status = "🎙️ No offline voice input for $lang"
+        }
+    }
+
     // ── FACE-TO-FACE: continuous, hands-free conversation ──
     // Should we keep the continuous loop alive right now?
     fun shouldFaceListen(): Boolean =
@@ -1592,7 +1620,12 @@ fun SpeechNovaApp(
                         isFaceListening = false
                         status = "❌ Microphone permission denied"
                     }
-                    else -> reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 350)
+                    else -> {
+                        if (SpeechPacks.looksLikeMissingLanguage(error)) {
+                            reportOfflineVoiceMissing(fromLang)
+                        }
+                        reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 350)
+                    }
                 }
             }
 
@@ -1796,6 +1829,9 @@ fun SpeechNovaApp(
                                 isRecording = false
                             }
                             else -> {
+                                if (SpeechPacks.looksLikeMissingLanguage(error)) {
+                                    reportOfflineVoiceMissing(currentFromLang)
+                                }
                                 if (isRecording && !isSpeaking) handler.postDelayed({
                                     startRecognizer(currentFromLang, currentToLang)
                                 }, 1000)
@@ -2264,6 +2300,9 @@ fun SpeechNovaApp(
             override fun onError(error: Int) {
                 if (practiceRecognizer === sr) practiceRecognizer = null
                 practicingWord = null
+                if (SpeechPacks.looksLikeMissingLanguage(error)) {
+                    reportOfflineVoiceMissing(lang)
+                }
                 practiceResult = PracticeResult(target, false, "(didn't catch that — try again)")
                 sr.destroy()
             }
@@ -3093,6 +3132,53 @@ fun SpeechNovaApp(
                         activeColor = Color(0xFFf472b6)
                     )
 
+                    // Voice input is a *separate* download from the ML Kit
+                    // translation packs, owned by the phone's speech service.
+                    // Having every translation pack and still not being heard
+                    // offline is exactly the confusion this row exists for.
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val tag = langToSTT[fromLang] ?: "en-IN"
+                                val asked = SpeechPacks.triggerDownload(context, tag)
+                                if (asked) {
+                                    status =
+                                        "📥 Asked your phone to download offline voice input for $fromLang"
+                                } else if (!SpeechPacks.openVoiceInputSettings(context)) {
+                                    status =
+                                        "Open Settings → System → Languages & input → Voice input to add $fromLang"
+                                }
+                                showSettings = false
+                            },
+                        color = Color(0xFF334155),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🎙️", fontSize = 18.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Offline voice input",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Lets the microphone hear $fromLang with no internet. This is your phone's own download, separate from the translation packs — English usually has it, other languages usually don't.",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                            Text("›", color = Color.White, fontSize = 20.sp)
+                        }
+                    }
+
                     Spacer(Modifier.height(6.dp))
                     Surface(
                         modifier = Modifier
@@ -3773,37 +3859,38 @@ fun SpeechNovaApp(
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
                         HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works with no internet.")
                         HelpStep("4", "📦 Going somewhere with no signal?", "Translating between two languages needs a pack for each one (English is built in), so Hindi → Bengali needs both. Open ⚙️ Settings → Offline languages and download what you'll need before you travel — offline, they can't be fetched.")
+                        HelpStep("5", "🎙️ Speaking offline in a language other than English", "The microphone needs a second, separate download: your phone's own offline voice input. English almost always has it; Hindi, Bengali, Tamil and others usually don't, which is why speaking them offline just beeps and hears nothing. ⚙️ Settings → Offline voice input sets it up.")
 
                         HelpSection("Translating by voice")
-                        HelpStep("5", "🎤 START", "Tap the big green button and talk clearly. It translates each sentence as you finish it. Tap ⏹ STOP when you're done.")
-                        HelpStep("6", "🔴 RECORD, then 🌍 TRANSLATE", "Turn on \"Speak Multiple Sentences\" in ⚙️ Settings and the button becomes 🔴 RECORD. Say as much as you like, then tap 🌍 TRANSLATE to do it all in one go.")
-                        HelpStep("7", "🔊 Listen", "Every translation is spoken out loud automatically. Tap 🔊 Listen beside it to hear it again as many times as you need.")
-                        HelpStep("8", "🔊 Play all", "At the top of the conversation, replays the whole conversation from the beginning — handy for going back over what was said.")
+                        HelpStep("6", "🎤 START", "Tap the big green button and talk clearly. It translates each sentence as you finish it. Tap ⏹ STOP when you're done.")
+                        HelpStep("7", "🔴 RECORD, then 🌍 TRANSLATE", "Turn on \"Speak Multiple Sentences\" in ⚙️ Settings and the button becomes 🔴 RECORD. Say as much as you like, then tap 🌍 TRANSLATE to do it all in one go.")
+                        HelpStep("8", "🔊 Listen", "Every translation is spoken out loud automatically. Tap 🔊 Listen beside it to hear it again as many times as you need.")
+                        HelpStep("9", "🔊 Play all", "At the top of the conversation, replays the whole conversation from the beginning — handy for going back over what was said.")
 
                         HelpSection("Keeping what you translate")
-                        HelpStep("9", "☆ Save", "Tap the star beside a translation to save it. It fills in ⭐ to show it's kept.")
-                        HelpStep("10", "⭐ Saved", "The Saved button at the top of Home lists everything you starred, so your useful phrases are one tap away. From there you can listen, copy, share, or remove any of them.")
-                        HelpStep("11", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
-                        HelpStep("12", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
+                        HelpStep("10", "☆ Save", "Tap the star beside a translation to save it. It fills in ⭐ to show it's kept.")
+                        HelpStep("11", "⭐ Saved", "The Saved button at the top of Home lists everything you starred, so your useful phrases are one tap away. From there you can listen, copy, share, or remove any of them.")
+                        HelpStep("12", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
+                        HelpStep("13", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
                         HelpSection("Other ways to translate")
-                        HelpStep("13", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
-                        HelpStep("14", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("15", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
-                        HelpStep("16", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
-                        HelpStep("17", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+                        HelpStep("14", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("15", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("16", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("17", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("18", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
                         HelpSection("Learning as you go")
-                        HelpStep("18", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("19", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
-                        HelpStep("20", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
-                        HelpStep("21", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
-                        HelpStep("22", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
-                        HelpStep("23", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("19", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("20", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
+                        HelpStep("21", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("22", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
+                        HelpStep("23", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
+                        HelpStep("24", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
 
                         HelpSection("Making it yours")
-                        HelpStep("24", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("25", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("25", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("26", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
