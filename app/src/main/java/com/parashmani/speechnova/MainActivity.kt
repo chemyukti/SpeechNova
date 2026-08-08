@@ -931,6 +931,11 @@ fun SpeechNovaApp(
 
     // ── Type / paste text and translate it ──
     var showTextTranslate by remember { mutableStateOf(false) }
+
+    // ── Offline language packs ──
+    var showOfflinePacks by remember { mutableStateOf(false) }
+    var downloadedPacks by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var packBusy by remember { mutableStateOf<String?>(null) }
     var pastedText by remember { mutableStateOf("") }
     var pastedDetectedLang by remember { mutableStateOf<String?>(null) }
     var pastedResult by remember { mutableStateOf("") }
@@ -995,56 +1000,9 @@ fun SpeechNovaApp(
         mutableStateOf<com.google.mlkit.nl.translate.Translator?>(null)
     }
 
-    val langToMLKit = mapOf(
-        "English" to TranslateLanguage.ENGLISH,
-        "Spanish" to TranslateLanguage.SPANISH,
-        "French" to TranslateLanguage.FRENCH,
-        "German" to TranslateLanguage.GERMAN,
-        "Chinese" to TranslateLanguage.CHINESE,
-        "Japanese" to TranslateLanguage.JAPANESE,
-        "Korean" to TranslateLanguage.KOREAN,
-        "Arabic" to TranslateLanguage.ARABIC,
-        "Russian" to TranslateLanguage.RUSSIAN,
-        "Portuguese" to TranslateLanguage.PORTUGUESE,
-        "Italian" to TranslateLanguage.ITALIAN,
-        "Hindi" to TranslateLanguage.HINDI,
-        "Bengali" to TranslateLanguage.BENGALI,
-        "Tamil" to TranslateLanguage.TAMIL,
-        "Telugu" to TranslateLanguage.TELUGU,
-        "Marathi" to TranslateLanguage.MARATHI,
-        "Gujarati" to TranslateLanguage.GUJARATI,
-        "Kannada" to TranslateLanguage.KANNADA,
-        "Urdu" to TranslateLanguage.URDU,
-        // Every language below is one ML Kit can actually translate offline.
-        // Malayalam, Punjabi, Odia, Assamese and Nepali are deliberately absent
-        // — ML Kit ships no model for them, and offering a language the app
-        // cannot translate would be worse than not listing it.
-        "Indonesian" to TranslateLanguage.INDONESIAN,
-        "Malay" to TranslateLanguage.MALAY,
-        "Thai" to TranslateLanguage.THAI,
-        "Vietnamese" to TranslateLanguage.VIETNAMESE,
-        "Turkish" to TranslateLanguage.TURKISH,
-        "Persian" to TranslateLanguage.PERSIAN,
-        "Hebrew" to TranslateLanguage.HEBREW,
-        "Dutch" to TranslateLanguage.DUTCH,
-        "Polish" to TranslateLanguage.POLISH,
-        "Ukrainian" to TranslateLanguage.UKRAINIAN,
-        "Greek" to TranslateLanguage.GREEK,
-        "Swedish" to TranslateLanguage.SWEDISH,
-        "Danish" to TranslateLanguage.DANISH,
-        "Norwegian" to TranslateLanguage.NORWEGIAN,
-        "Finnish" to TranslateLanguage.FINNISH,
-        "Czech" to TranslateLanguage.CZECH,
-        "Romanian" to TranslateLanguage.ROMANIAN,
-        "Hungarian" to TranslateLanguage.HUNGARIAN,
-        "Swahili" to TranslateLanguage.SWAHILI,
-        "Filipino" to TranslateLanguage.TAGALOG,
-        "Afrikaans" to TranslateLanguage.AFRIKAANS,
-        "Croatian" to TranslateLanguage.CROATIAN,
-        "Bulgarian" to TranslateLanguage.BULGARIAN,
-        "Slovak" to TranslateLanguage.SLOVAK,
-        "Catalan" to TranslateLanguage.CATALAN
-    )
+    // One canonical table, shared with the offline pack manager — see
+    // OfflineLanguages.kt. Two copies of a language table drift.
+    val langToMLKit = LANGUAGE_TO_MLKIT
 
     val langToSTT = mapOf(
         "English" to "en-IN",
@@ -1258,12 +1216,25 @@ fun SpeechNovaApp(
                         isReady = false
                         status = "⚠️ Connect internet"
                         messages.clear()
-                        messages.add(
-                            TranslationMessage(
-                                displayText = "⚠️ No offline models. Connect internet to download $from ↔ $to (both directions).",
-                                type = "system"
+                        // Say which pack is actually missing. ML Kit pivots
+                        // through English, so $from ↔ $to needs a pack for
+                        // each side — which is why every English pair can work
+                        // offline while this one doesn't.
+                        OfflineLanguages.missingPacksFor(from, to) { missing ->
+                            messages.add(
+                                TranslationMessage(
+                                    displayText = when {
+                                        missing.isEmpty() ->
+                                            "⚠️ Couldn't translate $from → $to offline. Connect to the internet once and try again."
+                                        missing.size == 1 ->
+                                            "⚠️ The ${missing.first()} language pack isn't downloaded. $from → $to needs a pack for each language, so connect to the internet once to get it — then it works offline for good. You can manage packs in ⚙️ Settings → Offline languages."
+                                        else ->
+                                            "⚠️ The ${missing.joinToString(" and ")} language packs aren't downloaded. Connect to the internet once to get them, then $from → $to works offline. You can manage packs in ⚙️ Settings → Offline languages."
+                                    },
+                                    type = "system"
+                                )
                             )
-                        )
+                        }
                     }
             }, 800)
         }
@@ -3130,6 +3101,41 @@ fun SpeechNovaApp(
                         activeColor = Color(0xFFf472b6)
                     )
 
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showSettings = false
+                                showOfflinePacks = true
+                            },
+                        color = Color(0xFF334155),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("📦", fontSize = 18.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Offline languages",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Download language packs now so translation keeps working with no internet. Translating between two languages needs a pack for each.",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                            Text("›", color = Color.White, fontSize = 20.sp)
+                        }
+                    }
+
                     // Which voice is actually being used, in plain words. How
                     // human the app sounds is decided almost entirely by what
                     // the phone has installed, and until now there was no way
@@ -3364,6 +3370,175 @@ fun SpeechNovaApp(
                 }
             }
         )
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // OFFLINE LANGUAGE PACKS
+    //
+    // ML Kit translates through English, so a pair like Hindi → Bengali needs
+    // a pack for each side. Someone who has only ever translated from English
+    // has one pack per language and finds every English pair works offline
+    // while the first non-English pair fails. This is where they can see what
+    // they have and fetch what they don't — before they are somewhere with no
+    // signal, rather than after.
+    // ═══════════════════════════════════════════════════════════
+    if (showOfflinePacks) {
+        LaunchedEffect(showOfflinePacks) {
+            OfflineLanguages.downloadedLanguages { downloadedPacks = it }
+        }
+        Dialog(
+            onDismissRequest = { showOfflinePacks = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .fillMaxHeight(0.9f)
+                    .padding(vertical = 16.dp),
+                color = Color(0xFF1e293b),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize().padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "📦 Offline languages",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { showOfflinePacks = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Text("✕", color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Translating between two languages needs a pack for each of them — English is built in. Download the ones you'll need while you still have internet.",
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (isOnline(context)) {
+                            "You're online — packs can be downloaded now."
+                        } else {
+                            "⚠️ You're offline. Packs already downloaded still work, but new ones can't be fetched until you reconnect."
+                        },
+                        color = if (isOnline(context)) Color(0xFF6ee7b7) else Color(0xFFfbbf24),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        langList.filter { it != "English" }.forEach { lang ->
+                            val have = lang in downloadedPacks
+                            val busy = packBusy == lang
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                color = if (have) Color(0xFF0f2e2a) else Color(0xFF334155),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(
+                                        horizontal = 14.dp,
+                                        vertical = 10.dp
+                                    ),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            lang,
+                                            color = Color.White,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            if (have) "Ready to use offline" else "Not downloaded",
+                                            color = if (have) {
+                                                Color(0xFF6ee7b7)
+                                            } else {
+                                                Color.White.copy(alpha = 0.5f)
+                                            },
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    when {
+                                        busy -> CircularProgressIndicator(
+                                            color = Color(0xFF34d399),
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        have -> TextButton(
+                                            onClick = {
+                                                packBusy = lang
+                                                OfflineLanguages.delete(lang) {
+                                                    packBusy = null
+                                                    OfflineLanguages.downloadedLanguages {
+                                                        downloadedPacks = it
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Text(
+                                                "Remove",
+                                                color = Color.White.copy(alpha = 0.6f),
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                        else -> Button(
+                                            onClick = {
+                                                packBusy = lang
+                                                OfflineLanguages.download(lang) { ok ->
+                                                    packBusy = null
+                                                    if (!ok) {
+                                                        status =
+                                                            "❌ Couldn't download $lang — check your connection"
+                                                    }
+                                                    OfflineLanguages.downloadedLanguages {
+                                                        downloadedPacks = it
+                                                    }
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = Color(0xFF10b981)
+                                            )
+                                        ) {
+                                            Text("Download", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { showOfflinePacks = false },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366f1))
+                    ) {
+                        Text("Done", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -3604,38 +3779,39 @@ fun SpeechNovaApp(
                         HelpSection("Getting started")
                         HelpStep("1", "Five simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
-                        HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works even with no internet.")
+                        HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works with no internet.")
+                        HelpStep("4", "📦 Going somewhere with no signal?", "Translating between two languages needs a pack for each one (English is built in), so Hindi → Bengali needs both. Open ⚙️ Settings → Offline languages and download what you'll need before you travel — offline, they can't be fetched.")
 
                         HelpSection("Translating by voice")
-                        HelpStep("4", "🎤 START", "Tap the big green button and talk clearly. It translates each sentence as you finish it. Tap ⏹ STOP when you're done.")
-                        HelpStep("5", "🔴 RECORD, then 🌍 TRANSLATE", "Turn on \"Speak Multiple Sentences\" in ⚙️ Settings and the button becomes 🔴 RECORD. Say as much as you like, then tap 🌍 TRANSLATE to do it all in one go.")
-                        HelpStep("6", "🔊 Listen", "Every translation is spoken out loud automatically. Tap 🔊 Listen beside it to hear it again as many times as you need.")
-                        HelpStep("7", "🔊 Play all", "At the top of the conversation, replays the whole conversation from the beginning — handy for going back over what was said.")
+                        HelpStep("5", "🎤 START", "Tap the big green button and talk clearly. It translates each sentence as you finish it. Tap ⏹ STOP when you're done.")
+                        HelpStep("6", "🔴 RECORD, then 🌍 TRANSLATE", "Turn on \"Speak Multiple Sentences\" in ⚙️ Settings and the button becomes 🔴 RECORD. Say as much as you like, then tap 🌍 TRANSLATE to do it all in one go.")
+                        HelpStep("7", "🔊 Listen", "Every translation is spoken out loud automatically. Tap 🔊 Listen beside it to hear it again as many times as you need.")
+                        HelpStep("8", "🔊 Play all", "At the top of the conversation, replays the whole conversation from the beginning — handy for going back over what was said.")
 
                         HelpSection("Keeping what you translate")
-                        HelpStep("8", "☆ Save", "Tap the star beside a translation to save it. It fills in ⭐ to show it's kept.")
-                        HelpStep("9", "⭐ Saved", "The Saved button at the top of Home lists everything you starred, so your useful phrases are one tap away. From there you can listen, copy, share, or remove any of them.")
-                        HelpStep("10", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
-                        HelpStep("11", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
+                        HelpStep("9", "☆ Save", "Tap the star beside a translation to save it. It fills in ⭐ to show it's kept.")
+                        HelpStep("10", "⭐ Saved", "The Saved button at the top of Home lists everything you starred, so your useful phrases are one tap away. From there you can listen, copy, share, or remove any of them.")
+                        HelpStep("11", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
+                        HelpStep("12", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
                         HelpSection("Other ways to translate")
-                        HelpStep("12", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
-                        HelpStep("13", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("14", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
-                        HelpStep("15", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
-                        HelpStep("16", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+                        HelpStep("13", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("14", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("15", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("16", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("17", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
                         HelpSection("Learning as you go")
-                        HelpStep("17", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("18", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
-                        HelpStep("19", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
-                        HelpStep("20", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
-                        HelpStep("21", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
-                        HelpStep("22", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("18", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("19", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
+                        HelpStep("20", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("21", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
+                        HelpStep("22", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
+                        HelpStep("23", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
 
                         HelpSection("Making it yours")
-                        HelpStep("23", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("24", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("24", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("25", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
