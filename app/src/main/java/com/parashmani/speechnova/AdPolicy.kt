@@ -13,8 +13,6 @@ import android.content.Context
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.RequestConfiguration
-import com.google.android.gms.ads.VideoOptions
-import com.google.android.gms.ads.nativead.NativeAdOptions
 
 /**
  * Single place where the rules for *what kind of ads SpeechNova is allowed to
@@ -28,9 +26,12 @@ import com.google.android.gms.ads.nativead.NativeAdOptions
  *    app, so the app has to say out loud that it only wants G-rated ads.
  *  - version code 8, for an ad *format* violation under the Families rules:
  *    the rewarded ad that gated Face-to-Face could not be closed within five
- *    seconds and blocked a feature until it was watched. That ad is gone —
- *    the app now ships banner and native formats only, both dismissible and
- *    neither able to block anything.
+ *    seconds and blocked a feature until it was watched.
+ *  - version code 10, for showing more than one ad on a page: the Learn
+ *    screen carried a native card while the banner sits on every screen.
+ *
+ * What is left is one banner, in one place, and no second format anywhere —
+ * the only arrangement that cannot accidentally put two ads on a page.
  *
  * The second rejection also settled a question the first one left open: the
  * Families rules only apply to apps whose declared audience includes children,
@@ -79,16 +80,6 @@ object AdPolicy {
      * skip the policy above.
      */
     fun request(): AdRequest = AdRequest.Builder().build()
-
-    /**
-     * Options for the native ad card. Video creatives start muted: an ad that
-     * begins playing sound on its own interferes with the app, which is one
-     * of the things the Families ad-format rules forbid.
-     */
-    fun nativeAdOptions(): NativeAdOptions =
-        NativeAdOptions.Builder()
-            .setVideoOptions(VideoOptions.Builder().setStartMuted(true).build())
-            .build()
 
     private fun buildRequestConfiguration(): RequestConfiguration =
         RequestConfiguration.Builder()

@@ -69,14 +69,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import com.google.android.gms.ads.AdListener
-import com.google.android.gms.ads.AdLoader
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
-import com.google.android.gms.ads.LoadAdError
-import com.google.android.gms.ads.nativead.MediaView
-import com.google.android.gms.ads.nativead.NativeAd
-import com.google.android.gms.ads.nativead.NativeAdView
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
@@ -111,7 +105,6 @@ private const val APP_PACKAGE = "com.parashmani.speechnova"
 // prohibited — a rewarded ad is unclosable for its whole run by design, so
 // there is no rewarded unit here and no gate for one to sit behind.
 private const val AD_UNIT_BANNER = "ca-app-pub-8499432704301966/9196802502"
-private const val AD_UNIT_NATIVE = "ca-app-pub-8499432704301966/9457225173"
 
 
 // ── How long a pause counts as "finished talking" ──────────────────────────
@@ -496,171 +489,25 @@ private fun MiniLabeledIcon(emoji: String, label: String, onClick: () -> Unit) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// NATIVE AD — built programmatically (no XML layout needed) so it can
-// live inside Compose via AndroidView. Renders nothing until an ad has
-// actually loaded, so there's never an empty/broken-looking card.
-// ═══════════════════════════════════════════════════════════════════════
-private fun buildNativeAdView(context: android.content.Context): NativeAdView {
-    val density = context.resources.displayMetrics.density
-    fun dp(v: Int) = (v * density).toInt()
 
-    val nativeAdView = NativeAdView(context)
-
-    val root = android.widget.LinearLayout(context).apply {
-        orientation = android.widget.LinearLayout.VERTICAL
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        setBackgroundColor(android.graphics.Color.parseColor("#1e293b"))
-    }
-
-    // The Families rules require an ad to be obviously an ad — a child must
-    // never mistake it for part of the app. A 10sp grey "Ad" did not clear
-    // that bar, so this is a high-contrast badge instead.
-    val adLabel = android.widget.TextView(context).apply {
-        text = "  ADVERTISEMENT  "
-        setTextColor(android.graphics.Color.parseColor("#0b1220"))
-        setBackgroundColor(android.graphics.Color.parseColor("#fbbf24"))
-        textSize = 11f
-        setTypeface(typeface, android.graphics.Typeface.BOLD)
-        layoutParams = android.widget.LinearLayout.LayoutParams(
-            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(8) }
-    }
-    root.addView(adLabel)
-
-    val topRow = android.widget.LinearLayout(context).apply {
-        orientation = android.widget.LinearLayout.HORIZONTAL
-        gravity = android.view.Gravity.CENTER_VERTICAL
-        setPadding(0, dp(4), 0, dp(4))
-    }
-
-    val iconView = android.widget.ImageView(context).apply {
-        layoutParams = android.widget.LinearLayout.LayoutParams(dp(40), dp(40))
-    }
-    topRow.addView(iconView)
-
-    val textCol = android.widget.LinearLayout(context).apply {
-        orientation = android.widget.LinearLayout.VERTICAL
-        layoutParams = android.widget.LinearLayout.LayoutParams(
-            0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        ).apply { marginStart = dp(10) }
-    }
-    val headlineView = android.widget.TextView(context).apply {
-        setTextColor(android.graphics.Color.WHITE)
-        textSize = 14f
-        setTypeface(typeface, android.graphics.Typeface.BOLD)
-    }
-    val bodyView = android.widget.TextView(context).apply {
-        setTextColor(android.graphics.Color.parseColor("#cbd5e1"))
-        textSize = 12f
-        maxLines = 2
-    }
-    textCol.addView(headlineView)
-    textCol.addView(bodyView)
-    topRow.addView(textCol)
-    root.addView(topRow)
-
-    val mediaView = MediaView(context).apply {
-        layoutParams = android.widget.LinearLayout.LayoutParams(
-            android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(120)
-        )
-    }
-    root.addView(mediaView)
-
-    val ctaButton = android.widget.Button(context).apply {
-        layoutParams = android.widget.LinearLayout.LayoutParams(
-            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) }
-        setBackgroundColor(android.graphics.Color.parseColor("#6366f1"))
-        setTextColor(android.graphics.Color.WHITE)
-        isAllCaps = false
-    }
-    root.addView(ctaButton)
-
-    nativeAdView.addView(root)
-    nativeAdView.headlineView = headlineView
-    nativeAdView.bodyView = bodyView
-    nativeAdView.iconView = iconView
-    nativeAdView.mediaView = mediaView
-    nativeAdView.callToActionView = ctaButton
-
-    return nativeAdView
+/**
+ * The widest anchored banner that fits this screen, in the current rotation.
+ *
+ * Adaptive banners are taller than the old fixed 320x50 and fill the device
+ * width, so they earn materially more per impression — without adding a second
+ * ad anywhere, which the Families Ad Format Requirements forbid.
+ */
+private fun adaptiveBannerSize(context: android.content.Context): AdSize {
+    val metrics = context.resources.displayMetrics
+    val widthDp = (metrics.widthPixels / metrics.density).toInt().coerceAtLeast(320)
+    return AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, widthDp)
 }
 
-private fun populateNativeAdView(nativeAdView: NativeAdView, ad: NativeAd) {
-    (nativeAdView.headlineView as? android.widget.TextView)?.text = ad.headline
-
-    val bodyTextView = nativeAdView.bodyView as? android.widget.TextView
-    if (ad.body.isNullOrEmpty()) {
-        bodyTextView?.visibility = android.view.View.GONE
-    } else {
-        bodyTextView?.visibility = android.view.View.VISIBLE
-        bodyTextView?.text = ad.body
-    }
-
-    val iconImageView = nativeAdView.iconView as? android.widget.ImageView
-    val icon = ad.icon
-    if (icon != null) {
-        iconImageView?.setImageDrawable(icon.drawable)
-        iconImageView?.visibility = android.view.View.VISIBLE
-    } else {
-        iconImageView?.visibility = android.view.View.GONE
-    }
-
-    ad.mediaContent?.let { nativeAdView.mediaView?.setMediaContent(it) }
-
-    val cta = ad.callToAction
-    (nativeAdView.callToActionView as? android.widget.Button)?.text = cta
-    nativeAdView.callToActionView?.visibility =
-        if (cta.isNullOrEmpty()) android.view.View.INVISIBLE else android.view.View.VISIBLE
-
-    nativeAdView.setNativeAd(ad)
-}
-
-@Composable
-private fun NativeAdCard(adUnitId: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    var nativeAd by remember { mutableStateOf<NativeAd?>(null) }
-
-    DisposableEffect(adUnitId) {
-        val adLoader = AdLoader.Builder(context, adUnitId)
-            .forNativeAd { ad ->
-                nativeAd?.destroy()
-                nativeAd = ad
-            }
-            .withAdListener(object : AdListener() {
-                override fun onAdFailedToLoad(error: LoadAdError) {
-                    Log.w("SpeechNova", "Native ad failed to load: ${error.message}")
-                }
-            })
-            // A native ad whose video starts talking over the user is an ad
-            // that interferes with app use. Video in this card always starts
-            // muted; the ad's own control is the only way to turn sound on.
-            .withNativeAdOptions(AdPolicy.nativeAdOptions())
-            .build()
-        adLoader.loadAd(AdPolicy.request())
-
-        onDispose { nativeAd?.destroy() }
-    }
-
-    val ad = nativeAd
-    if (ad != null) {
-        Surface(
-            modifier = modifier,
-            color = Color(0xFF1e293b),
-            shape = RoundedCornerShape(14.dp),
-            shadowElevation = 3.dp
-        ) {
-            AndroidView(
-                modifier = Modifier.fillMaxWidth(),
-                factory = { ctx -> buildNativeAdView(ctx) },
-                update = { view -> populateNativeAdView(view, ad) }
-            )
-        }
-    }
-}
+// Only one ad anywhere in the app: a single banner above the navigation bar.
+// The Families Ad Format Requirements allow one ad per page, and the native
+// card that used to sit on the Learn screen made two there, because the banner
+// is on every screen. Rather than juggle which screen may show which format,
+// there is now one format in one place and nothing to get wrong.
 
 // A settings toggle that always explains what it does in a full sentence,
 // not just a two-word label — this is what the Settings dialog is built from.
@@ -1092,7 +939,6 @@ fun SpeechNovaApp(
 
     // LEARN screen
     var learnLang by remember { mutableStateOf(toLang) }
-    var learnAdDismissed by remember { mutableStateOf(false) }
     // Vocabulary (English master list, translated on-device into learnLang) plus
     // the speak-and-check pronunciation practice built on top of it.
     val vocabulary = remember { mutableStateListOf<VocabItem>() }
@@ -1107,6 +953,10 @@ fun SpeechNovaApp(
     var quizIndex by remember { mutableIntStateOf(0) }
     var quizScore by remember { mutableIntStateOf(0) }
     var quizChosen by remember { mutableStateOf<String?>(null) }
+    // The language the current round was built for. The quiz used to snapshot
+    // the word list once and never notice a language change, so switching
+    // language left the old round on screen.
+    var quizLang by remember { mutableStateOf("") }
     var learnerName by remember { mutableStateOf<String?>(null) }
     var nameEntry by remember { mutableStateOf("") }
     var leaderboard by remember { mutableStateOf<List<Learner>>(emptyList()) }
@@ -2308,6 +2158,7 @@ fun SpeechNovaApp(
         learnerName = Progress.currentLearner(context)
         refreshLeaderboard()
         quizQuestions = buildQuiz(vocabulary)
+        quizLang = learnLang
         quizIndex = 0
         quizScore = 0
         quizChosen = null
@@ -2572,8 +2423,25 @@ fun SpeechNovaApp(
     }
 
     // Build the vocabulary list the first time LEARN is opened for a language.
+    // Both screens run off the same word list, and the Quiz tab can be opened
+    // without ever visiting Learn — which is why the quiz used to show the
+    // previous language until you went via Learn and came back.
     LaunchedEffect(currentScreen, learnLang) {
-        if (currentScreen == Screen.LEARN) loadVocabulary(learnLang)
+        if (currentScreen == Screen.LEARN || currentScreen == Screen.QUIZ) {
+            loadVocabulary(learnLang)
+        }
+    }
+
+    // Rebuild the round once the words for the chosen language are actually
+    // in. buildQuiz drops anything not yet translated, so a round built while
+    // the list is still loading comes out short or empty; this picks it up
+    // when loading finishes, and again whenever the language changes.
+    LaunchedEffect(currentScreen, learnLang, vocabLoading, vocabulary.size) {
+        if (currentScreen == Screen.QUIZ && !vocabLoading &&
+            (quizLang != learnLang || quizQuestions.isEmpty())
+        ) {
+            startQuiz()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -2687,12 +2555,10 @@ fun SpeechNovaApp(
                 Screen.LEARN -> LearnScreenContent(
                     learnLang = learnLang,
                     langList = langList,
-                    adDismissed = learnAdDismissed,
                     vocabulary = vocabulary,
                     vocabLoading = vocabLoading,
                     practicingWord = practicingWord,
                     practiceResult = practiceResult,
-                    onDismissAd = { learnAdDismissed = true },
                     onPickLang = {
                         stopPractice()
                         learnLang = it
@@ -2727,15 +2593,73 @@ fun SpeechNovaApp(
                 )
 
                 Screen.QUIZ -> QuizScreenBody {
-                    Text(
-                        "🎮 $learnLang quiz",
-                        color = Color.White,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    // The picker lives here as well as on Learn, so the quiz
+                    // can be pointed at another language without leaving it.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "🎮 Quiz",
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Box {
+                            var quizLangExp by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { quizLangExp = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF334155)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(learnLang, fontSize = 14.sp, maxLines = 1)
+                                Spacer(Modifier.width(6.dp))
+                                Text("▾", fontSize = 14.sp)
+                            }
+                            DropdownMenu(
+                                quizLangExp, { quizLangExp = false },
+                                modifier = Modifier
+                                    .background(Color(0xFF1e293b))
+                                    .heightIn(max = 400.dp)
+                            ) {
+                                langList.forEach { lang ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(lang, color = Color.White, fontSize = 13.sp)
+                                        },
+                                        onClick = {
+                                            quizLangExp = false
+                                            learnLang = lang
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(12.dp))
 
                     when {
+                        // Still translating the word list for this language —
+                        // building a round now would drop most of the words.
+                        vocabLoading || (quizLang != learnLang) -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    color = Color(0xFF34d399),
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "Getting the $learnLang words ready…",
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
                         // Asked once per device, then never again.
                         learnerName == null -> {
                             Text(
@@ -3028,7 +2952,14 @@ fun SpeechNovaApp(
                     modifier = Modifier.fillMaxWidth(),
                     factory = { ctx ->
                         AdView(ctx).apply {
-                            setAdSize(AdSize.BANNER)
+                            // An anchored adaptive banner rather than the fixed
+                            // 320x50. It fills the width of whatever phone it
+                            // lands on and lets the network serve a
+                            // better-paying creative — which is the only way
+                            // left to earn more here, because the Families
+                            // rules cap the app at one ad per page and it
+                            // already shows one on every screen.
+                            setAdSize(adaptiveBannerSize(ctx))
                             adUnitId = AD_UNIT_BANNER
                             loadAd(AdPolicy.request())
                         }
@@ -4242,12 +4173,10 @@ private fun HomeScreenContent(
 private fun LearnScreenContent(
     learnLang: String,
     langList: List<String>,
-    adDismissed: Boolean,
     vocabulary: List<VocabItem>,
     vocabLoading: Boolean,
     practicingWord: String?,
     practiceResult: PracticeResult?,
-    onDismissAd: () -> Unit,
     onPickLang: (String) -> Unit,
     onSpeakLetter: (String) -> Unit,
     onHearWord: (String) -> Unit,
@@ -4332,40 +4261,6 @@ private fun LearnScreenContent(
         }
 
         Spacer(Modifier.height(12.dp))
-
-        // Dismissible native ad.
-        // The close button used to sit *on top of* the ad's top-right corner
-        // at 26dp. A child aiming for it and missing landed on the ad instead
-        // — exactly the inadvertent click the Families rules prohibit. It now
-        // lives in its own row above the ad, well clear of anything clickable,
-        // at a full 48dp touch target.
-        if (!adDismissed) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onDismissAd,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF334155))
-                ) {
-                    Text("✕", color = Color.White, fontSize = 16.sp)
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            NativeAdCard(
-                adUnitId = AD_UNIT_NATIVE,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-            )
-            Spacer(Modifier.height(20.dp))
-        }
 
         if (script == null) {
             Surface(

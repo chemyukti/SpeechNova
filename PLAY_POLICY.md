@@ -1,13 +1,14 @@
 # Play Console — ads compliance for SpeechNova
 
-Two rejections in a row, both about ads:
+Three rejections, all about ads:
 
 | Version code | Issue | Cause |
 | --- | --- | --- |
 | 7 | Ad Content — inconsistent with the app's content rating | SDK was free to serve up to a mature (MA) rating |
 | 8 | Families Ad Format Requirements — unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
+| 10 | Families Ad Format Requirements — multiple ads per page | The Learn screen carried a native card while the banner sits on every screen |
 
-The second notice is the important one: the **Families Policy Requirements
+The version 8 notice is the important one: the **Families Policy Requirements
 apply to this app**, which means its Play listing declares an audience that
 includes children. That is a much stricter regime than the content-rating fix
 alone assumed.
@@ -21,9 +22,9 @@ alone assumed.
 | G-rated ad content only | `setMaxAdContentRating(MAX_AD_CONTENT_RATING_G)` |
 | No behavioural targeting / remarketing to children | `setTagForChildDirectedTreatment(...TRUE)` |
 | No advertising ID transmitted | `AD_ID` permission removed in the manifest |
-| Ads must be clearly distinguishable from app content | Prominent "ADVERTISEMENT" label on both banner and native card |
+| One ad per page | **Native ad removed entirely.** One banner, in one place, is the only arrangement that cannot accidentally put two ads on a page |
+| Ads must be clearly distinguishable from app content | Prominent "ADVERTISEMENT" label above the banner |
 | No design that produces inadvertent clicks | Close button moved off the ad and enlarged to 48dp; banner separated from the nav bar |
-| Ads must not start sound on their own | Native video creatives start muted |
 | Certified ads SDK | Google Mobile Ads, bumped 23.0.0 → 23.6.0 |
 
 ## Code side — done in this branch
@@ -37,7 +38,7 @@ request is built through `AdPolicy.request()` so none can bypass it.
 target-audience answers in Play Console → Policy → App content. If the listing
 is ever narrowed to adults only, revisit the `AD_ID` removal at the same time.
 
-`versionCode` is **9** — 7 and 8 are both burnt and can never be re-uploaded.
+`versionCode` is **11** — 7, 8 and 10 are all burnt and can never be re-uploaded.
 
 ## Console side — must be done by hand before resubmitting
 
@@ -78,3 +79,33 @@ None of this can be set from code:
   Face-to-Face opens straight into the conversation UI with no gate.
 - Give AdMob blocking-control changes a few hours to propagate before
   spot-checking live ads.
+
+
+## Wanting more ad revenue without breaking this again
+
+The app is already at the ceiling the Families rules allow: **one ad per page**,
+and the banner is on every screen. There is no compliant way to add a second
+ad anywhere. Three formats are worth naming explicitly so they aren't tried:
+
+- **Interstitials** — technically permitted if closable after five seconds, but
+  this app has already been rejected twice for ad *format*. A third attempt is
+  not worth the review risk.
+- **Rewarded ads** — unclosable for their full run by design. This is what got
+  version 8 rejected.
+- **App-open ads** — full screen before the app is usable. Exactly the
+  "interferes with app use" pattern the notices describe.
+
+What is left, and what has been done in code: the banner is now an **anchored
+adaptive banner** rather than a fixed 320x50. It fills the device width, is
+taller, and lets the network serve a better-paying creative — more revenue from
+the same single impression.
+
+Everything else is console-side:
+
+1. **AdMob → Mediation.** Add networks so the slot is auctioned rather than
+   filled by one buyer. This is the single biggest lever available.
+2. **Check fill rate before assuming low revenue is a bug.** A child-directed,
+   G-rated, non-personalised request has a much smaller pool of buyers than a
+   default one. That is the cost of Families compliance, not a fault.
+3. **Leave banner refresh at the AdMob default.** Refreshing faster than 30
+   seconds violates AdMob policy and risks the account, not just a release.
