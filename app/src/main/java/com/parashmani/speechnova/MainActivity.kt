@@ -1179,6 +1179,15 @@ fun SpeechNovaApp(
 
         val downloadConditions = DownloadConditions.Builder().build()
 
+        // Replaces the previous notice rather than clearing the conversation.
+        // These used to call messages.clear(), which threw away everything the
+        // user had translated every time a language pack was checked — and
+        // that check runs on every language change.
+        fun setSystemNotice(text: String) {
+            messages.removeAll { it.type == "system" }
+            messages.add(TranslationMessage(displayText = text, type = "system"))
+        }
+
         fun checkOfflineAvailability() {
             isDownloading = false
             handler.postDelayed({
@@ -1189,25 +1198,18 @@ fun SpeechNovaApp(
                             .addOnSuccessListener {
                                 Log.i("SpeechNova", "✓ Offline: $to → $from")
                                 isReady = true
+                                // The status line already says this. A card in
+                                // the conversation for every language change
+                                // was just noise the user had to scroll past.
                                 status = "✅ Offline (both ways)!"
-                                messages.clear()
-                                messages.add(
-                                    TranslationMessage(
-                                        displayText = "✅ Offline mode: $from ↔ $to both work!",
-                                        type = "system"
-                                    )
-                                )
+                                messages.removeAll { it.type == "system" }
                             }
                             .addOnFailureListener {
                                 Log.w("SpeechNova", "✗ Missing: $to → $from")
                                 isReady = true
                                 status = "⚠️ Only $from → $to offline"
-                                messages.clear()
-                                messages.add(
-                                    TranslationMessage(
-                                        displayText = "⚠️ Only $from → $to works offline. Connect internet to download $to → $from.",
-                                        type = "system"
-                                    )
+                                setSystemNotice(
+                                    "⚠️ Only $from → $to works offline. Connect to the internet once to download $to → $from."
                                 )
                             }
                     }
@@ -1215,24 +1217,20 @@ fun SpeechNovaApp(
                         Log.e("SpeechNova", "✗ No offline models")
                         isReady = false
                         status = "⚠️ Connect internet"
-                        messages.clear()
                         // Say which pack is actually missing. ML Kit pivots
                         // through English, so $from ↔ $to needs a pack for
                         // each side — which is why every English pair can work
                         // offline while this one doesn't.
                         OfflineLanguages.missingPacksFor(from, to) { missing ->
-                            messages.add(
-                                TranslationMessage(
-                                    displayText = when {
-                                        missing.isEmpty() ->
-                                            "⚠️ Couldn't translate $from → $to offline. Connect to the internet once and try again."
-                                        missing.size == 1 ->
-                                            "⚠️ The ${missing.first()} language pack isn't downloaded. $from → $to needs a pack for each language, so connect to the internet once to get it — then it works offline for good. You can manage packs in ⚙️ Settings → Offline languages."
-                                        else ->
-                                            "⚠️ The ${missing.joinToString(" and ")} language packs aren't downloaded. Connect to the internet once to get them, then $from → $to works offline. You can manage packs in ⚙️ Settings → Offline languages."
-                                    },
-                                    type = "system"
-                                )
+                            setSystemNotice(
+                                when {
+                                    missing.isEmpty() ->
+                                        "⚠️ Couldn't translate $from → $to offline. Connect to the internet once and try again."
+                                    missing.size == 1 ->
+                                        "⚠️ The ${missing.first()} language pack isn't downloaded. $from → $to needs a pack for each language, so connect to the internet once to get it — then it works offline for good. You can manage packs in ⚙️ Settings → Offline languages."
+                                    else ->
+                                        "⚠️ The ${missing.joinToString(" and ")} language packs aren't downloaded. Connect to the internet once to get them, then $from → $to works offline. You can manage packs in ⚙️ Settings → Offline languages."
+                                }
                             )
                         }
                     }
@@ -1248,13 +1246,7 @@ fun SpeechNovaApp(
                         isDownloading = false
                         status = "✅ Both ways work offline!"
                         isReady = true
-                        messages.clear()
-                        messages.add(
-                            TranslationMessage(
-                                displayText = "✅ $from ↔ $to ready! Works offline both ways.",
-                                type = "system"
-                            )
-                        )
+                        messages.removeAll { it.type == "system" }
                     }
                     .addOnFailureListener { reverseError ->
                         Log.w("SpeechNova", "Reverse download failed: ${reverseError.message}")
