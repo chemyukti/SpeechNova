@@ -4,4 +4,6 @@
          the photo is deleted as soon as the next scan starts, and the system
          can reclaim it at any time. -->
     <cache-path name="scans" path="scans/" />
+    <!-- Lecture transcripts written out for the user to keep. -->
+    <cache-path name="exports" path="exports/" />
 </paths>

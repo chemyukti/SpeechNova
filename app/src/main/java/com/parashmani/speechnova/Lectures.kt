@@ -10,7 +10,11 @@
 package com.parashmani.speechnova
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
+import androidx.core.content.FileProvider
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -163,4 +167,48 @@ object Lectures {
 
     fun dateNow(): String =
         SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date())
+
+    /**
+     * Writes the whole transcript to a file and hands it to whatever the user
+     * wants to keep it in — Drive, Files, email, a notes app.
+     *
+     * Sharing plain text works for a short talk but falls over on a real
+     * lecture: messaging apps truncate, and a forty-minute transcript is not
+     * something anyone wants pasted into a chat. A file is what a student
+     * actually needs to keep.
+     */
+    fun exportToFile(context: Context, session: LectureSession): Boolean = runCatching {
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        // Only the newest export is kept; these are handed straight to
+        // another app and have no reason to accumulate.
+        dir.listFiles()?.forEach { it.delete() }
+
+        val safeName = session.title
+            .replace(Regex("[^A-Za-z0-9 _-]"), "")
+            .trim()
+            .ifBlank { "lecture" }
+            .take(40)
+        val file = File(dir, "$safeName.txt")
+        file.writeText(asText(session))
+
+        val uri: Uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, session.title)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(
+            Intent.createChooser(intent, "Save or send this lecture").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        true
+    }.onFailure {
+        Log.w("SpeechNova", "Could not export the lecture", it)
+    }.getOrDefault(false)
 }
