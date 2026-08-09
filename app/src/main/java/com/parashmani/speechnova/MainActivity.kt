@@ -127,6 +127,11 @@ private const val SPEECH_POSSIBLY_COMPLETE_SILENCE_MS = 2000L
 /** Never end a turn before this, so a breath isn't taken as the whole answer. */
 private const val SPEECH_MINIMUM_LENGTH_MS = 1200L
 
+/** Silence in a lecture long enough to mean the speaker moved on, rather than
+ *  drew breath. Marks a break in the transcript so a student can find their
+ *  place afterwards. */
+private const val LECTURE_PAUSE_MS = 2500L
+
 /** Practice mode is one word, so it can settle much sooner. */
 private const val PRACTICE_COMPLETE_SILENCE_MS = 900L
 private const val PRACTICE_MINIMUM_LENGTH_MS = 500L
@@ -240,7 +245,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /** The four top-level destinations reachable from the bottom navigation bar. */
-enum class Screen { HOME, LEARN, PHRASES, FACE2FACE, QUIZ }
+enum class Screen { HOME, LECTURE, LEARN, PHRASES, FACE2FACE, QUIZ }
 
 data class TranslationMessage(
     val displayText: String,
@@ -421,6 +426,7 @@ private val HEADER_GRADIENT = listOf(
     Color(0xFFa855f7), // purple
     Color(0xFFdb2777)  // rose
 )
+private val ACCENT_LECTURE = Color(0xFFc084fc)   // purple
 private val ACCENT_HELP = Color(0xFFfbbf24)      // amber
 private val ACCENT_TEXT = Color(0xFF38bdf8)      // sky
 private val ACCENT_SCAN = Color(0xFF34d399)      // emerald
@@ -512,6 +518,59 @@ private fun adaptiveBannerSize(context: android.content.Context): AdSize {
 // A settings toggle that always explains what it does in a full sentence,
 // not just a two-word label — this is what the Settings dialog is built from.
 @Composable
+private fun PresetRow(
+    label: String,
+    caption: String,
+    options: List<Pair<String, Float>>,
+    selected: Float,
+    accent: Color,
+    onPick: (Float) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        color = Color(0xFF334155),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(
+                caption,
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 11.sp,
+                lineHeight = 15.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                options.forEach { (text, value) ->
+                    val active = kotlin.math.abs(value - selected) < 0.001f
+                    Surface(
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onPick(value) },
+                        color = if (active) accent else Color(0xFF1e293b),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text,
+                            color = if (active) Color(0xFF0b1220) else Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun SettingRow(
     title: String,
     description: String,
@@ -676,6 +735,7 @@ private fun HelpStep(number: String, title: String, description: String) {
 private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
     val items = listOf(
         Triple(Screen.HOME, "🏠", "Home"),
+        Triple(Screen.LECTURE, "🎓", "Lecture"),
         Triple(Screen.LEARN, "📚", "Learn"),
         Triple(Screen.PHRASES, "📖", "Phrases"),
         Triple(Screen.FACE2FACE, "🎭", "Face"),
@@ -916,6 +976,14 @@ fun SpeechNovaApp(
     var romanticMode by remember { mutableStateOf(false) } // Romantic tone
     var speechSpeed by remember { mutableFloatStateOf(0.75f) } // Slower = more natural (AI4Bharat style)
     var speechPitch by remember { mutableFloatStateOf(1.15f) }  // Warmer, friendlier pitch
+    var speechVolume by remember { mutableFloatStateOf(1.0f) }
+    // How loud a sound has to be before the app treats it as speech. Lower
+    // gain suits a quiet room; higher gain is for a lecture hall or a soft
+    // speaker sitting some distance away.
+    var micSensitivity by remember { mutableIntStateOf(75) }
+    // Overrides the automatic choice when someone wants a specific installed
+    // voice. Empty means let the app pick.
+    var chosenVoiceName by remember { mutableStateOf("") }
     var fromLang by remember { mutableStateOf("English") }
     var toLang by remember { mutableStateOf("Hindi") }
     var isDownloading by remember { mutableStateOf(false) }
@@ -961,6 +1029,22 @@ fun SpeechNovaApp(
     var practicingWord by remember { mutableStateOf<String?>(null) }
     var practiceResult by remember { mutableStateOf<PracticeResult?>(null) }
     var practiceRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+
+    // Hands-free listening can be paused without leaving the screen — for a
+    // phone call, an interruption, or anything you'd rather not have
+    // translated and shown to the person opposite.
+    var facePaused by remember { mutableStateOf(false) }
+
+    // ── Lecture mode ──
+    var lectureRecording by remember { mutableStateOf(false) }
+    val lectureChunks = remember { mutableStateListOf<LectureChunk>() }
+    var lectureRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+    var lectureStartedAt by remember { mutableLongStateOf(0L) }
+    var lastLectureResultAt by remember { mutableLongStateOf(0L) }
+    var lectureLive by remember { mutableStateOf("") }
+    var lectureSessions by remember { mutableStateOf<List<LectureSession>>(emptyList()) }
+    var lectureTitle by remember { mutableStateOf("") }
+    var lectureElapsed by remember { mutableIntStateOf(0) }
 
     // ── Quiz game & the device's learners ──
     var quizQuestions by remember { mutableStateOf<List<QuizQuestion>>(emptyList()) }
@@ -1122,12 +1206,19 @@ fun SpeechNovaApp(
     )
 
     // Function to select appropriate voice (male/female/romantic)
+    // Volume has to travel with each utterance; TextToSpeech has no setter.
+    fun ttsParams(): Bundle = Bundle().apply {
+        putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, speechVolume)
+    }
+
     fun selectVoice(targetLang: String) {
         val locale = langToTTS[targetLang] ?: Locale.US
         tts?.language = locale
 
-        val selectedVoice =
-            pickBestVoice(tts?.voices, locale, useFemaleVoice, isOnline(context))
+        val manual = chosenVoiceName.takeIf { it.isNotBlank() }
+            ?.let { name -> tts?.voices?.firstOrNull { it.name == name } }
+        val selectedVoice = manual
+            ?: pickBestVoice(tts?.voices, locale, useFemaleVoice, isOnline(context))
 
         if (selectedVoice != null) {
             tts?.voice = selectedVoice
@@ -1158,7 +1249,7 @@ fun SpeechNovaApp(
         tts?.language = locale
         tts?.setSpeechRate(0.6f)
         tts?.setPitch(1.0f)
-        tts?.speak(glyph, TextToSpeech.QUEUE_FLUSH, null, "letter")
+        tts?.speak(glyph, TextToSpeech.QUEUE_FLUSH, ttsParams(), "letter")
     }
 
     // OFFLINE-CAPABLE DOWNLOAD - Downloads BOTH directions
@@ -1296,7 +1387,7 @@ fun SpeechNovaApp(
             .replace(", ", ",  ")
             .trim()
 
-        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, null, null)
+        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, ttsParams(), null)
     }
 
     fun repeatAllConversation() {
@@ -1361,7 +1452,7 @@ fun SpeechNovaApp(
             .replace("! ", "!   ")
             .replace(", ", ",  ")
             .trim()
-        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, null, null)
+        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, ttsParams(), null)
         status = "✅ Phrase spoken"
     }
 
@@ -1560,10 +1651,187 @@ fun SpeechNovaApp(
         }
     }
 
+    // ── LECTURE: capture a long talk and translate it as it goes ──
+    // The same continuous-recognition loop as Face-to-Face, but nothing is
+    // spoken back — a phone talking during a lecture is the last thing anyone
+    // wants — so there is no echo to guard against and the mic can simply stay
+    // open. Results are kept as timestamped chunks rather than one block of
+    // text, because a student needs to find their place afterwards.
+    fun stopLectureListening() {
+        lectureRecognizer?.destroy()
+        lectureRecognizer = null
+    }
+
+    fun startLectureListening() {
+        if (!lectureRecording || currentScreen != Screen.LECTURE) {
+            stopLectureListening()
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            status = "❌ Speech recognition not available"
+            lectureRecording = false
+            return
+        }
+        lectureRecognizer?.destroy()
+        val sr = SpeechRecognizer.createSpeechRecognizer(context)
+        lectureRecognizer = sr
+
+        fun reArm(delayMs: Long) {
+            handler.postDelayed({
+                if (lectureRecording && currentScreen == Screen.LECTURE) {
+                    startLectureListening()
+                } else {
+                    stopLectureListening()
+                }
+            }, delayMs)
+        }
+
+        fun addChunk(heard: String) {
+            val cleaned = TextCleaner.clean(heard, fromLang)
+            if (cleaned.isBlank()) return
+            val now = System.currentTimeMillis()
+            val gapMs = if (lastLectureResultAt == 0L) 0L else now - lastLectureResultAt
+            lastLectureResultAt = now
+            val offset = ((now - lectureStartedAt) / 1000).toInt()
+
+            fun append(translated: String) {
+                lectureChunks.add(
+                    LectureChunk(
+                        clockTime = Lectures.clockNow(),
+                        offsetLabel = Lectures.formatDuration(offset),
+                        original = cleaned,
+                        translated = translated,
+                        afterPauseSeconds =
+                            if (gapMs >= LECTURE_PAUSE_MS) (gapMs / 1000).toInt() else 0
+                    )
+                )
+            }
+
+            if (fromLang == toLang) {
+                append(cleaned)
+                return
+            }
+            val translator = mlTranslator
+            if (translator == null) {
+                append("")
+                return
+            }
+            translator.translate(cleaned)
+                .addOnSuccessListener { append(it.trim()) }
+                .addOnFailureListener { append("") }
+        }
+
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {
+                micLevel = (rmsdB.coerceIn(0f, 10f)) / 10f
+            }
+            override fun onBufferReceived(b: ByteArray?) {}
+            override fun onEndOfSpeech() { micLevel = 0f }
+
+            override fun onError(error: Int) {
+                micLevel = 0f
+                sr.destroy()
+                if (lectureRecognizer === sr) lectureRecognizer = null
+                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                    lectureRecording = false
+                    status = "❌ Microphone permission denied"
+                    return
+                }
+                if (SpeechPacks.looksLikeMissingLanguage(error)) {
+                    reportOfflineVoiceMissing(fromLang)
+                }
+                // A lecture has long gaps. Keep going rather than giving up.
+                reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 300)
+            }
+
+            override fun onResults(results: Bundle?) {
+                micLevel = 0f
+                val heard = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.trim().orEmpty()
+                sr.destroy()
+                if (lectureRecognizer === sr) lectureRecognizer = null
+                lectureLive = ""
+                if (heard.isNotBlank()) addChunk(heard)
+                reArm(200)
+            }
+
+            override fun onPartialResults(partial: Bundle?) {
+                val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!t.isNullOrBlank()) lectureLive = t
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[fromLang] ?: "en-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra("android.speech.extra.DICTATION_MODE", true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_COMPLETE_SILENCE_MS
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
+            }
+        }
+        try {
+            sr.startListening(intent)
+        } catch (_: Exception) {
+            reArm(800)
+        }
+    }
+
+    fun startLecture() {
+        if (!hasMicPermission()) {
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        lectureChunks.clear()
+        lectureLive = ""
+        lectureStartedAt = System.currentTimeMillis()
+        lastLectureResultAt = 0L
+        lectureElapsed = 0
+        lectureRecording = true
+        startLectureListening()
+    }
+
+    fun stopLecture() {
+        lectureRecording = false
+        stopLectureListening()
+        micLevel = 0f
+        lectureLive = ""
+        if (lectureChunks.isEmpty()) return
+        val session = LectureSession(
+            id = System.currentTimeMillis(),
+            title = lectureTitle.ifBlank { "Lecture, ${Lectures.dateNow()}" },
+            date = Lectures.dateNow(),
+            fromLang = fromLang,
+            toLang = toLang,
+            durationSeconds = lectureElapsed,
+            chunks = lectureChunks.toList()
+        )
+        Lectures.save(context, session)
+        lectureSessions = Lectures.all(context)
+        status = "💾 Lecture saved"
+    }
+
     // ── FACE-TO-FACE: continuous, hands-free conversation ──
     // Should we keep the continuous loop alive right now?
     fun shouldFaceListen(): Boolean =
         currentScreen == Screen.FACE2FACE &&
+                !facePaused &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
 
@@ -1674,7 +1942,7 @@ fun SpeechNovaApp(
                             topBubble = t
                             lastFaceReply = t
                             selectVoice(toLang)
-                            tts?.speak(t, TextToSpeech.QUEUE_FLUSH, null, FACE_UTTERANCE_ID)
+                            tts?.speak(t, TextToSpeech.QUEUE_FLUSH, ttsParams(), FACE_UTTERANCE_ID)
                             // If the engine never reports that it finished,
                             // release the mic anyway rather than going deaf —
                             // but only if this is still the reply in progress.
@@ -1767,8 +2035,12 @@ fun SpeechNovaApp(
                     }
 
                     override fun onRmsChanged(rmsdB: Float) {
+                        // Higher sensitivity means a lower bar for counting
+                        // a sound as speech: 100 gates almost nothing, 30
+                        // ignores everything but a clear voice.
+                        val gate = (100 - micSensitivity) / 12f
                         when {
-                            rmsdB < 2f -> return
+                            rmsdB < gate -> return
                             rmsdB > 20f -> {
                                 status = "🔊 Too loud"
                                 return
@@ -1999,7 +2271,7 @@ fun SpeechNovaApp(
                             .trim()
 
                         isSpeaking = true
-                        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, null, null)
+                        tts?.speak(textWithPauses, TextToSpeech.QUEUE_FLUSH, ttsParams(), null)
 
                         // Continuous mode re-opens the mic after the reply. The
                         // duration here is only an estimate, and reopening
@@ -2335,7 +2607,7 @@ fun SpeechNovaApp(
                 // Always play the correct pronunciation back so they can learn it.
                 selectVoice(lang)
                 tts?.setSpeechRate(0.6f)
-                tts?.speak(target, TextToSpeech.QUEUE_FLUSH, null, "practice")
+                tts?.speak(target, TextToSpeech.QUEUE_FLUSH, ttsParams(), "practice")
             }
 
             override fun onPartialResults(partial: Bundle?) {}
@@ -2418,8 +2690,8 @@ fun SpeechNovaApp(
     // language pair. Keying on the languages is what makes swapping work
     // without leaving the screen: the recognizer is created for one specific
     // language, so a swap has to tear the old one down and start a fresh one.
-    LaunchedEffect(currentScreen, fromLang, toLang) {
-        if (currentScreen == Screen.FACE2FACE && hasMicPermission()) {
+    LaunchedEffect(currentScreen, fromLang, toLang, facePaused) {
+        if (currentScreen == Screen.FACE2FACE && !facePaused && hasMicPermission()) {
             topBubble = ""
             bottomBubble = ""
             // Drop the recognizer listening in the previous language, then give
@@ -2430,6 +2702,17 @@ fun SpeechNovaApp(
             startFaceToFaceListening()
         } else {
             stopFaceToFaceListening()
+        }
+    }
+
+    // Lecture clock, and the saved list when the tab opens.
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == Screen.LECTURE) lectureSessions = Lectures.all(context)
+    }
+    LaunchedEffect(lectureRecording) {
+        while (lectureRecording) {
+            lectureElapsed = ((System.currentTimeMillis() - lectureStartedAt) / 1000).toInt()
+            delay(1000)
         }
     }
 
@@ -2548,6 +2831,7 @@ fun SpeechNovaApp(
                         if (!hasCameraPermission()) cameraPermLauncher.launch(Manifest.permission.CAMERA)
                         else launchCameraScan()
                     },
+                    onOpenLecture = { currentScreen = Screen.LECTURE },
                     onTranslateText = {
                         pastedResult = ""
                         pastedError = ""
@@ -2621,6 +2905,237 @@ fun SpeechNovaApp(
                         currentScreen = Screen.HOME
                     }
                 )
+
+                Screen.LECTURE -> QuizScreenBody {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "🎓 Lecture",
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (lectureRecording) {
+                            Surface(
+                                color = Color(0xFF7f1d1d),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Text(
+                                    "🔴 ${Lectures.formatDuration(lectureElapsed)}",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Records a class or talk and translates it as it goes, $fromLang to $toLang. Nothing is spoken out loud. Long pauses are marked so you can find your place later.",
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    if (!lectureRecording) {
+                        OutlinedTextField(
+                            value = lectureTitle,
+                            onValueChange = { lectureTitle = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    "Name this lecture (optional)",
+                                    color = Color.White.copy(alpha = 0.4f),
+                                    fontSize = 14.sp
+                                )
+                            },
+                            textStyle = LocalTextStyle.current.copy(
+                                color = Color.White,
+                                fontSize = 15.sp
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF6366f1),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                cursorColor = Color(0xFF6366f1)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    Button(
+                        onClick = { if (lectureRecording) stopLecture() else startLecture() },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (lectureRecording) {
+                                Color(0xFFef4444)
+                            } else {
+                                Color(0xFF10b981)
+                            }
+                        )
+                    ) {
+                        Text(
+                            if (lectureRecording) "⏹ Stop and save" else "🎙 Start recording",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+
+                    if (lectureRecording && lectureLive.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            lectureLive,
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 13.sp,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                        )
+                    }
+
+                    if (lectureChunks.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${lectureChunks.size} parts",
+                                color = Color.White.copy(alpha = 0.55f),
+                                fontSize = 12.sp
+                            )
+                            Row {
+                                MiniLabeledIcon(emoji = "📋", label = "Copy") {
+                                    copyToClipboard(
+                                        Lectures.asText(
+                                            LectureSession(
+                                                0L,
+                                                lectureTitle.ifBlank { "Lecture" },
+                                                Lectures.dateNow(),
+                                                fromLang,
+                                                toLang,
+                                                lectureElapsed,
+                                                lectureChunks.toList()
+                                            )
+                                        )
+                                    )
+                                }
+                                MiniLabeledIcon(emoji = "📤", label = "Share") {
+                                    shareText(
+                                        Lectures.asText(
+                                            LectureSession(
+                                                0L,
+                                                lectureTitle.ifBlank { "Lecture" },
+                                                Lectures.dateNow(),
+                                                fromLang,
+                                                toLang,
+                                                lectureElapsed,
+                                                lectureChunks.toList()
+                                            )
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        lectureChunks.reversed().forEach { chunk ->
+                            if (chunk.afterPauseSeconds > 0) {
+                                Text(
+                                    "· · ·  ${chunk.afterPauseSeconds}s pause  · · ·",
+                                    color = Color(0xFFfbbf24),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                color = Color(0xFF1e293b),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        chunk.offsetLabel,
+                                        color = Color(0xFFa5b4fc),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(
+                                        chunk.original,
+                                        color = Color.White.copy(alpha = 0.6f),
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp
+                                    )
+                                    if (chunk.translated.isNotBlank()) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            chunk.translated,
+                                            color = Color.White,
+                                            fontSize = 15.sp,
+                                            lineHeight = 21.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (!lectureRecording && lectureSessions.isNotEmpty()) {
+                        Spacer(Modifier.height(18.dp))
+                        Text(
+                            "SAVED LECTURES",
+                            color = Color(0xFFa5b4fc),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        lectureSessions.forEach { session ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                color = Color(0xFF334155),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            session.title,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            "${session.date} · ${Lectures.formatDuration(session.durationSeconds)} · ${session.chunks.size} parts",
+                                            color = Color.White.copy(alpha = 0.55f),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    MiniLabeledIcon(emoji = "📤", label = "Share") {
+                                        shareText(Lectures.asText(session))
+                                    }
+                                    MiniLabeledIcon(emoji = "🗑", label = "Delete") {
+                                        Lectures.delete(context, session.id)
+                                        lectureSessions = Lectures.all(context)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Screen.QUIZ -> QuizScreenBody {
                     // The picker lives here as well as on Learn, so the quiz
@@ -2940,6 +3455,8 @@ fun SpeechNovaApp(
                     bottomBubble = bottomBubble,
                     isListening = isFaceListening,
                     micLevel = micLevel,
+                    paused = facePaused,
+                    onTogglePause = { facePaused = !facePaused },
                     onSwapLangs = {
                         // Just change the languages — the effect above owns the
                         // recognizer's lifecycle and restarts it in the new
@@ -3004,6 +3521,7 @@ fun SpeechNovaApp(
             if (target != Screen.FACE2FACE) stopFaceToFaceListening()
             if (target != Screen.LEARN) stopPractice()
             if (target != Screen.HOME && isRecording) stopRecording()
+            if (target != Screen.LECTURE && lectureRecording) stopLecture()
             // Arriving on the Quiz tab always starts a fresh round rather than
             // dropping the player back into a half-finished one.
             if (target == Screen.QUIZ && currentScreen != Screen.QUIZ) startQuiz()
@@ -3159,6 +3677,181 @@ fun SpeechNovaApp(
                         onCheckedChange = { useFemaleVoice = it },
                         activeColor = Color(0xFFf472b6)
                     )
+
+                    // ── Voice controls ──
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "HOW IT SPEAKS",
+                        color = Color(0xFFa5b4fc),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+
+                    PresetRow(
+                        label = "Speaking speed",
+                        caption = "Slower is easier to follow, and easier to copy when you're learning.",
+                        options = listOf(
+                            "0.5×" to 0.5f, "0.75×" to 0.75f, "Normal" to 1.0f,
+                            "1.25×" to 1.25f, "1.5×" to 1.5f, "2×" to 2.0f
+                        ),
+                        selected = speechSpeed,
+                        accent = Color(0xFF34d399),
+                        onPick = { speechSpeed = it; tts?.setSpeechRate(it) }
+                    )
+
+                    PresetRow(
+                        label = "Volume",
+                        caption = "How loud the translation is spoken, separate from your phone's volume.",
+                        options = listOf(
+                            "Mute" to 0f, "25%" to 0.25f, "50%" to 0.5f,
+                            "75%" to 0.75f, "Full" to 1.0f
+                        ),
+                        selected = speechVolume,
+                        accent = Color(0xFFa78bfa),
+                        onPick = { speechVolume = it }
+                    )
+
+                    PresetRow(
+                        label = "Pitch",
+                        caption = "Lower sounds deeper, higher sounds brighter.",
+                        options = listOf(
+                            "Low" to 0.75f, "Warm" to 0.95f, "Normal" to 1.0f,
+                            "Bright" to 1.15f, "High" to 1.4f
+                        ),
+                        selected = speechPitch,
+                        accent = Color(0xFF60a5fa),
+                        onPick = { speechPitch = it; tts?.setPitch(it) }
+                    )
+
+                    PresetRow(
+                        label = "Microphone sensitivity",
+                        caption = when {
+                            micSensitivity <= 40 -> "Quiet room. Ignores background noise."
+                            micSensitivity <= 70 -> "Balanced. Good for indoors."
+                            micSensitivity <= 88 -> "Classrooms and halls."
+                            else -> "Maximum. For a soft or distant speaker."
+                        },
+                        options = listOf(
+                            "Low" to 30f, "Balanced" to 50f, "Room" to 75f,
+                            "Hall" to 90f, "Max" to 100f
+                        ),
+                        selected = micSensitivity.toFloat(),
+                        accent = Color(0xFFfbbf24),
+                        onPick = { micSensitivity = it.toInt() }
+                    )
+
+                    // Hearing it is the only way to judge any of the above.
+                    Spacer(Modifier.height(6.dp))
+                    Button(
+                        onClick = {
+                            selectVoice(toLang)
+                            tts?.speak(
+                                "This is how SpeechNova will read your translations.",
+                                TextToSpeech.QUEUE_FLUSH,
+                                ttsParams(),
+                                "settings-test"
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366f1))
+                    ) {
+                        Text("🔊 Test the voice", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+
+                    // Manual override, for a phone with several installed
+                    // voices where the automatic pick isn't the nicest one.
+                    val voicesForLang = remember(toLang, showSettings) {
+                        val wanted = (langToTTS[toLang] ?: Locale.US).language
+                        tts?.voices
+                            ?.filter { it.locale?.language.equals(wanted, ignoreCase = true) }
+                            ?.filterNot {
+                                it.features.orEmpty()
+                                    .contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+                            }
+                            ?.sortedByDescending { it.quality }
+                            ?: emptyList()
+                    }
+                    if (voicesForLang.size > 1) {
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF334155),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    "Choose a $toLang voice",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Your phone has ${voicesForLang.size} installed. Automatic picks the highest quality one.",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                var voiceExp by remember { mutableStateOf(false) }
+                                Box {
+                                    Button(
+                                        onClick = { voiceExp = true },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF1e293b)
+                                        ),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text(
+                                            chosenVoiceName.ifBlank { "Automatic" },
+                                            fontSize = 12.sp,
+                                            maxLines = 1
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("▾", fontSize = 12.sp)
+                                    }
+                                    DropdownMenu(
+                                        voiceExp, { voiceExp = false },
+                                        modifier = Modifier
+                                            .background(Color(0xFF1e293b))
+                                            .heightIn(max = 360.dp)
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Automatic",
+                                                    color = Color.White,
+                                                    fontSize = 13.sp
+                                                )
+                                            },
+                                            onClick = {
+                                                voiceExp = false
+                                                chosenVoiceName = ""
+                                                selectVoice(toLang)
+                                            }
+                                        )
+                                        voicesForLang.forEach { voice ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        voice.name,
+                                                        color = Color.White,
+                                                        fontSize = 12.sp
+                                                    )
+                                                },
+                                                onClick = {
+                                                    voiceExp = false
+                                                    chosenVoiceName = voice.name
+                                                    selectVoice(toLang)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     Spacer(Modifier.height(6.dp))
                     Surface(
@@ -4289,7 +4982,7 @@ fun SpeechNovaApp(
                             .verticalScroll(rememberScrollState())
                     ) {
                         HelpSection("Getting started")
-                        HelpStep("1", "Five simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
+                        HelpStep("1", "Six simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 🎓 Lecture to record a class, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
                         HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works with no internet.")
                         HelpStep("4", "📦 Going somewhere with no signal?", "Translating between two languages needs a pack for each one (English is built in), so Hindi → Bengali needs both. Open ⚙️ Settings → Offline languages and download what you'll need before you travel — offline, they can't be fetched.")
@@ -4307,24 +5000,29 @@ fun SpeechNovaApp(
                         HelpStep("12", "📋 Copy", "Copies the translation to your clipboard, ready to paste into a message, an email, or anywhere else.")
                         HelpStep("13", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
+                        HelpSection("Sitting in a class or a talk")
+                        HelpStep("14", "🎓 Lecture", "Name the talk, tap Start recording, and put the phone down. It listens for as long as the class runs and translates as it goes, without speaking out loud. Filler words like \"um\" are dropped so the translation reads cleanly.")
+                        HelpStep("15", "Finding your place afterwards", "Every part is stamped with how far into the talk it came, and long pauses are marked, so you can match the transcript to what you remember. Tap Stop and save to keep it.")
+                        HelpStep("16", "Sharing your notes", "Copy or share a lecture as plain text, during or after. Saved lectures are listed under the record button and stay on your phone.")
+
                         HelpSection("Other ways to translate")
-                        HelpStep("14", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
-                        HelpStep("15", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("16", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
-                        HelpStep("17", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
-                        HelpStep("18", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+                        HelpStep("17", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("18", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("19", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("20", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("21", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
                         HelpSection("Learning as you go")
-                        HelpStep("19", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("20", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
-                        HelpStep("21", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
-                        HelpStep("22", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
-                        HelpStep("23", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
-                        HelpStep("24", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("22", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("23", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
+                        HelpStep("24", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("25", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
+                        HelpStep("26", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
+                        HelpStep("27", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
 
                         HelpSection("Making it yours")
-                        HelpStep("25", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("26", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("28", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
+                        HelpStep("29", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -4382,6 +5080,7 @@ private fun HomeScreenContent(
     onSwapLangs: () -> Unit,
     onScanCamera: () -> Unit,
     onTranslateText: () -> Unit,
+    onOpenLecture: () -> Unit,
     onPlayAll: () -> Unit,
     onListen: (String) -> Unit,
     onCopy: (String) -> Unit,
@@ -4441,19 +5140,90 @@ private fun HomeScreenContent(
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "SpeechNova",
+                                    color = Color.White,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                // Small caps badge, borrowed from the web build.
+                                Surface(
+                                    color = Color.White.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        "PRO",
+                                        color = Color(0xFFe0e7ff),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 1.5.sp,
+                                        modifier = Modifier.padding(
+                                            horizontal = 5.dp,
+                                            vertical = 2.dp
+                                        )
+                                    )
+                                }
+                            }
                             Text(
-                                "SpeechNova",
-                                color = Color.White,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                "Speak. Translate. Be understood.",
-                                color = Color(0xFFfde68a),
+                                "Speech translation & language learning",
+                                color = Color(0xFFe0e7ff),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
                             )
                         }
+                    }
+                }
+
+                // The language pair, swappable without scrolling to the
+                // pickers below. The web build puts this in the header and it
+                // is the right call: it is the control people reach for most.
+                Spacer(Modifier.height(12.dp))
+                Surface(
+                    color = Color.White.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            fromLang,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.End
+                        )
+                        Surface(
+                            color = Color.White.copy(alpha = 0.2f),
+                            shape = CircleShape,
+                            modifier = Modifier
+                                .padding(horizontal = 10.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = onSwapLangs)
+                        ) {
+                            Text(
+                                "⇄",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                        Text(
+                            toLang,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Start
+                        )
                     }
                 }
 
@@ -4463,6 +5233,7 @@ private fun HomeScreenContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
+                    HeaderShortcut("🎓", "Lecture", ACCENT_LECTURE, onOpenLecture)
                     HeaderShortcut("❓", "How to use", ACCENT_HELP, onShowHelp)
                     HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
                     HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
@@ -5370,6 +6141,8 @@ private fun FaceToFaceScreenContent(
     bottomBubble: String,
     isListening: Boolean,
     micLevel: Float,
+    paused: Boolean,
+    onTogglePause: () -> Unit,
     onSwapLangs: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -5382,13 +6155,19 @@ private fun FaceToFaceScreenContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("🎭 Face-to-Face", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Surface(color = Color(0xFF334155), shape = RoundedCornerShape(20.dp)) {
+            Surface(
+                color = if (paused) Color(0xFF7f1d1d) else Color(0xFF065f46),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable(onClick = onTogglePause)
+            ) {
                 Text(
-                    "Lay the phone flat between you",
+                    if (paused) "▶  Resume listening" else "⏸  Pause listening",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                 )
             }
         }
