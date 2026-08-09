@@ -76,6 +76,16 @@ object Progress {
         }
     }
 
+    /** Removes a learner and their score from this device for good. */
+    fun deleteLearner(context: Context, name: String) {
+        saveScores(context, leaderboard(context).filterNot {
+            it.name.equals(name, ignoreCase = true)
+        })
+        if (currentLearner(context).equals(name, ignoreCase = true)) {
+            switchLearner(context)
+        }
+    }
+
     /** Lets a second person on the same phone play as themselves. */
     fun switchLearner(context: Context) {
         prefs(context).edit().remove(KEY_CURRENT).apply()

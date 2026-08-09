@@ -1384,6 +1384,10 @@ fun SpeechNovaApp(
         recognizer?.destroy()
         recognizer = null
         handler.removeCallbacksAndMessages(null)
+        // STOP stopped listening but left the phone talking, which is very
+        // obvious after a scanned paragraph: the button says stopped and the
+        // voice carries on for another minute.
+        tts?.stop()
         status = "✅ Stopped"
     }
 
@@ -1669,6 +1673,25 @@ fun SpeechNovaApp(
         }
     }
 
+    /**
+     * Ends a reply: hands the turn over and reopens the mic.
+     *
+     * Every path that finishes a reply has to come through here. The turn used
+     * to flip only when the speech engine reported it had finished speaking,
+     * so a failed translation, a missing translator or a silent engine left
+     * the same person's turn in place forever — which looks exactly like
+     * hands-free not working.
+     */
+    fun endFaceReply(seq: Int) {
+        if (faceReplySeq != seq) return
+        if (faceHandsFree) faceTurnIsSource = !faceTurnIsSource
+        // The reply is done, so it can no longer come back as an echo. Holding
+        // on to it is actively harmful now: the next speaker talks in the same
+        // language the reply was in, and would be mistaken for that echo.
+        lastFaceReply = ""
+        isFaceReplying = false
+    }
+
     // ── FACE-TO-FACE: continuous, hands-free conversation ──
     // Should we keep the continuous loop alive right now?
     fun shouldFaceListen(): Boolean =
@@ -1782,7 +1805,7 @@ fun SpeechNovaApp(
                     val translator = if (speakingSource) mlTranslator else reverseTranslator
                     val replyLang = if (speakingSource) toLang else fromLang
                     // No translator configured — don't latch the mic shut.
-                    if (translator == null) isFaceReplying = false
+                    if (translator == null) endFaceReply(replySeq)
                     translator?.translate(text)
                         ?.addOnSuccessListener { translated ->
                             var t = translated.trim()
@@ -1797,13 +1820,13 @@ fun SpeechNovaApp(
                             handler.postDelayed({
                                 if (isFaceReplying && faceReplySeq == replySeq) {
                                     Log.w("SpeechNova", "Face-to-Face: TTS never reported done")
-                                    isFaceReplying = false
+                                    endFaceReply(replySeq)
                                 }
                             }, faceSpeechWatchdogMs(t))
                         }
                         ?.addOnFailureListener {
                             status = "❌ Translation failed"
-                            if (faceReplySeq == replySeq) isFaceReplying = false
+                            endFaceReply(replySeq)
                         }
                 }
                 reArm(600)
@@ -2693,15 +2716,7 @@ fun SpeechNovaApp(
         if (utteranceId != FACE_UTTERANCE_ID) return
         // If a newer reply starts during the guard, leave the mic shut for it.
         val finishedSeq = faceReplySeq
-        handler.postDelayed({
-            if (faceReplySeq == finishedSeq) {
-                // The reply has been said, so in hands-free mode the other
-                // person speaks next. Flipping here rather than when the mic
-                // reopens keeps the turn and the recognizer language in step.
-                if (faceHandsFree) faceTurnIsSource = !faceTurnIsSource
-                isFaceReplying = false
-            }
-        }, FACE_ECHO_GUARD_MS)
+        handler.postDelayed({ endFaceReply(finishedSeq) }, FACE_ECHO_GUARD_MS)
     }
 
     LaunchedEffect(Unit) {
@@ -3098,6 +3113,9 @@ fun SpeechNovaApp(
                                 fontSize = 12.sp
                             )
                             Row {
+                                MiniLabeledIcon(emoji = "🗑", label = "Clear") {
+                                    lectureChunks.clear()
+                                }
                                 MiniLabeledIcon(emoji = "📋", label = "Copy") {
                                     copyToClipboard(
                                         Lectures.asText(
@@ -3149,12 +3167,29 @@ fun SpeechNovaApp(
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        chunk.offsetLabel,
-                                        color = Color(0xFFa5b4fc),
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            // How far into the talk, and the
+                                            // wall-clock time — one to find
+                                            // your place in the recording, the
+                                            // other to match your own notes.
+                                            "⏱ ${chunk.offsetLabel}   🕐 ${chunk.clockTime}",
+                                            color = Color(0xFFa5b4fc),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        IconButton(
+                                            onClick = { lectureChunks.remove(chunk) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Text(
+                                                "✕",
+                                                color = Color.White.copy(alpha = 0.45f),
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
                                     Spacer(Modifier.height(3.dp))
                                     Text(
                                         chunk.original,
@@ -3432,6 +3467,24 @@ fun SpeechNovaApp(
                                 Text(
                                     "Someone else wants to play",
                                     color = Color.White.copy(alpha = 0.7f)
+                                )
+                            }
+                            // Removes the name and its score outright, for
+                            // getting a mistyped one off the board.
+                            TextButton(
+                                onClick = {
+                                    learnerName?.let { Progress.deleteLearner(context, it) }
+                                    Progress.switchLearner(context)
+                                    learnerName = null
+                                    nameEntry = ""
+                                    refreshLeaderboard()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    "🗑 Delete my name and score",
+                                    color = Color(0xFFfca5a5),
+                                    fontSize = 13.sp
                                 )
                             }
                         }
@@ -5079,6 +5132,38 @@ fun SpeechNovaApp(
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
+                        // First thing anyone reads, because it is the thing
+                        // that most needs saying and the thing people assume
+                        // is not true of a translation app.
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF0f2e2a),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    "🔒 Everything stays on your phone",
+                                    color = Color(0xFF6ee7b7),
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "It all runs on your device and works offline. Your translations, saved words, lecture notes and scores never leave the phone. Nobody else can see them — not us, not anyone. There is no account and nothing to sign in to. It's all yours.",
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "Two things do involve your phone's own services: speaking into the microphone uses the speech recognition you already have installed, and the app shows one ad. Neither of those is given anything you translate.",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+
                         HelpSection("Getting started")
                         HelpStep("1", "Six simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 🎓 Lecture to record a class, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
@@ -5103,24 +5188,32 @@ fun SpeechNovaApp(
                         HelpStep("15", "Finding your place afterwards", "Every part is stamped with how far into the talk it came, and long pauses are marked, so you can match the transcript to what you remember. Tap Stop and save to keep it.")
                         HelpStep("16", "Sharing your notes", "Copy or share a lecture as plain text, during or after. Saved lectures are listed under the record button and stay on your phone.")
 
+                        HelpStep("17", "🗑 Clear", "Next to Play all. Empties the conversation but keeps anything you starred, so ⭐ Saved is unaffected.")
+                        HelpStep("18", "⏹ STOP stops the voice too", "If a long scan or paragraph is being read out, STOP ends both the listening and the speaking.")
+
                         HelpSection("Other ways to translate")
-                        HelpStep("17", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
-                        HelpStep("18", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("19", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
-                        HelpStep("20", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
-                        HelpStep("21", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+                        HelpStep("19", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("20", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
+                        HelpStep("21", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("22", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
+                        HelpStep("23", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
+
+                        HelpStep("24", "🙌 Hands-free, or take turns by hand", "In 🎭 Face, hands-free flips the direction after every reply so two people just talk. Take turns by hand keeps one direction and you tap ⇄ swap — better in a noisy room, where the wrong voice can otherwise take the turn. Pause listening stops the mic without leaving the screen.")
+                        HelpStep("25", "📄 Export a lecture", "Saves the whole transcript as a file you can keep in Drive, Files or email — with the time each part was said, so you can match it to your own notes. Every part can be deleted, and so can a whole saved lecture.")
 
                         HelpSection("Learning as you go")
-                        HelpStep("22", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
-                        HelpStep("23", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
-                        HelpStep("24", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
-                        HelpStep("25", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
-                        HelpStep("26", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
-                        HelpStep("27", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+                        HelpStep("26", "📚 The alphabet", "Open 📚 Learn to see the letters of your language. Tap any letter to hear exactly how it sounds.")
+                        HelpStep("27", "🗣️ Words to practice", "Below the alphabet is a word list. Tap 🔊 to hear a word, or 🎤 to say it yourself. For Hindi, Marathi and Bengali it doesn't just say right or wrong — it shows you syllable by syllable which part came out wrong and what to change.")
+                        HelpStep("28", "\uD83C\uDFAE Quiz", "Its own tab at the bottom, next to \uD83C\uDFAD Face. It asks you eight words and gives you 10 points for each one you get right. Wrong answers cost nothing \u2014 you can hear the right word and try again next round.")
+                        HelpStep("29", "\uD83C\uDFC6 Scores", "Everyone who plays on this phone gets their own score, so a family or a class can compete. You type your name once and it's remembered. Scores stay on the phone \u2014 nothing is sent anywhere.")
+                        HelpStep("30", "\u2795 Add word", "The word list not long enough? Tap Add word in \uD83D\uDCDA Learn, type any English word, and it's translated and saved. From then on you can hear it, practise saying it, and be quizzed on it \u2014 offline.")
+                        HelpStep("31", "Learning Mode", "Turn it on in ⚙️ Settings to see the spelling and pronunciation of every translation, so you pick the language up while you use it.")
+
+                        HelpStep("32", "🎮 Quiz is its own tab", "At the end of the bottom bar. It uses whichever language 📚 Learn is set to, and waits for that language's words to finish loading. Your name is asked once and can be deleted from the results screen.")
 
                         HelpSection("Making it yours")
-                        HelpStep("28", "⚙️ Settings", "Choose a male or female speaking voice, switch to a slower and softer speaking style, turn Learning Mode on, and open your phone's own voice settings for finer control.")
-                        HelpStep("29", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
+                        HelpStep("33", "⚙️ Settings", "Speaking speed, volume, pitch and microphone sensitivity, a button to hear the voice before you commit to it, and a picker if your phone has more than one voice for a language. Also Learning Mode, the offline setup guide, and language packs.")
+                        HelpStep("34", "❓ How to use", "This guide. It's always at the top of the Home screen if you need it again.")
                     }
 
                     Spacer(Modifier.height(12.dp))
