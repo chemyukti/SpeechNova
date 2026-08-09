@@ -8,7 +8,7 @@ Review history:
 | 8 | Rejected — Families ad format, unclosable ads that interfere with app use | The rewarded ad gating Face-to-Face |
 | 9 | **Accepted** | Rewarded ad removed. Still carried banner *and* native — see below |
 | 10 | Rejected — Families ad format, multiple ads per page | The Learn screen carried a native card while the banner sits on every screen |
-| 11 | — | Native ad removed; one banner, app-wide |
+| 14 | — | Native ad removed; one banner, app-wide. Also Lecture mode, the Quiz tab, pronunciation coaching and the offline fixes |
 
 ### The most important thing in this table
 
@@ -60,8 +60,8 @@ request is built through `AdPolicy.request()` so none can bypass it.
 target-audience answers in Play Console → Policy → App content. If the listing
 is ever narrowed to adults only, revisit the `AD_ID` removal at the same time.
 
-`versionCode` is **11** — 7, 8 and 10 were rejected, 9 is the version currently
-live, and none of those numbers can ever be re-uploaded.
+`versionCode` is **14**. 7, 8 and 10 were rejected and 9 is the version
+currently live; no code that has already been uploaded can be reused.
 
 ## Console side — must be done by hand before resubmitting
 

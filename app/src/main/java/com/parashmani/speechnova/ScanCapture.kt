@@ -18,6 +18,7 @@ import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.text.Text
 import java.io.File
+import java.io.InputStreamReader
 
 /**
  * The photo handed to ML Kit, together with how far it has to be rotated to
@@ -136,3 +137,102 @@ fun Text.toReadableText(): String {
     }
     return if (paragraphs.isEmpty()) text.trim() else paragraphs.joinToString("\n")
 }
+
+
+// ── Reading a text file the user picked ────────────────────────────────────
+
+/** Files bigger than this are refused outright. */
+const val MAX_TEXT_FILE_BYTES = 50L * 1024 * 1024
+
+/**
+ * How much of a file is actually translated.
+ *
+ * A 50 MB text file is roughly fifty million characters. Holding that as a
+ * String costs about 100 MB before anything is translated, and ML Kit would
+ * be asked to run on-device translation across the whole of it — neither is
+ * survivable on a phone. This is a generous cap on real documents: a long
+ * essay is a few thousand characters, a book chapter maybe forty thousand.
+ */
+const val MAX_TEXT_CHARS = 120_000
+
+/** What came back from a picked file. */
+data class PickedText(
+    val text: String,
+    val truncated: Boolean,
+    val error: String? = null
+)
+
+/**
+ * Reads a picked file as text, refusing what cannot work rather than crashing
+ * on it. Only genuinely text-based files are readable — a PDF or a Word
+ * document is a container this app has no parser for, and reading one raw
+ * produces gibberish, so those are turned away by name with an explanation.
+ */
+fun readPickedText(context: Context, uri: Uri): PickedText {
+    val name = displayNameOf(context, uri).orEmpty()
+    val lower = name.lowercase()
+    val unreadable = listOf(".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".odt")
+    unreadable.firstOrNull { lower.endsWith(it) }?.let { ext ->
+        return PickedText(
+            "",
+            false,
+            "$ext files aren't plain text, so they can't be read here. Open it in its own app, copy the text, and use Paste."
+        )
+    }
+
+    val size = sizeOf(context, uri)
+    if (size != null && size > MAX_TEXT_FILE_BYTES) {
+        val mb = size / (1024 * 1024)
+        return PickedText("", false, "That file is ${mb} MB. The limit is 50 MB.")
+    }
+
+    return runCatching {
+        val builder = StringBuilder()
+        var truncated = false
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            InputStreamReader(stream, Charsets.UTF_8).use { reader ->
+                val buffer = CharArray(8192)
+                while (true) {
+                    val read = reader.read(buffer)
+                    if (read <= 0) break
+                    val room = MAX_TEXT_CHARS - builder.length
+                    if (read >= room) {
+                        builder.appendRange(buffer, 0, room)
+                        truncated = true
+                        break
+                    }
+                    builder.appendRange(buffer, 0, read)
+                }
+            }
+        } ?: return PickedText("", false, "Couldn't open that file.")
+
+        val text = builder.toString()
+        if (text.isBlank()) {
+            PickedText("", false, "That file has no text in it that can be read.")
+        } else {
+            PickedText(text, truncated)
+        }
+    }.onFailure {
+        Log.w("SpeechNova", "Could not read picked file", it)
+    }.getOrElse {
+        PickedText("", false, "Couldn't read that file.")
+    }
+}
+
+private fun displayNameOf(context: Context, uri: Uri): String? = runCatching {
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+    }
+}.getOrNull()
+
+private fun sizeOf(context: Context, uri: Uri): Long? = runCatching {
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+        if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) {
+            cursor.getLong(index)
+        } else {
+            null
+        }
+    }
+}.getOrNull()
