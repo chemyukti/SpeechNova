@@ -468,7 +468,7 @@ private fun HeaderShortcut(
             label,
             color = Color.White,
             fontSize = 10.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.ExtraBold
         )
     }
 }
@@ -736,40 +736,51 @@ private fun HelpStep(number: String, title: String, description: String) {
 // ── Bottom navigation bar (the spine of the v1.5 4-screen architecture) ──
 @Composable
 private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
+    // Each destination keeps its own colour, the same one it uses elsewhere in
+    // the app, so the tab you are on is obvious from colour alone and the bar
+    // isn't six identical grey labels.
+    data class NavItem(
+        val screen: Screen,
+        val emoji: String,
+        val label: String,
+        val accent: Color
+    )
     val items = listOf(
-        Triple(Screen.HOME, "🏠", "Home"),
-        Triple(Screen.LECTURE, "🎓", "Lecture"),
-        Triple(Screen.LEARN, "📚", "Learn"),
-        Triple(Screen.PHRASES, "📖", "Phrases"),
-        Triple(Screen.FACE2FACE, "🎭", "Face"),
-        Triple(Screen.QUIZ, "🎮", "Quiz")
+        NavItem(Screen.HOME, "🏠", "Home", Color(0xFF34d399)),
+        NavItem(Screen.LECTURE, "🎓", "Lecture", ACCENT_LECTURE),
+        NavItem(Screen.LEARN, "📚", "Learn", Color(0xFF38bdf8)),
+        NavItem(Screen.PHRASES, "📖", "Phrases", Color(0xFFfbbf24)),
+        NavItem(Screen.FACE2FACE, "🎭", "Face", Color(0xFFf472b6)),
+        NavItem(Screen.QUIZ, "🎮", "Quiz", Color(0xFFa78bfa))
     )
     NavigationBar(
         containerColor = Color(0xFF0b1220),
         contentColor = Color.White,
         windowInsets = WindowInsets(0, 0, 0, 0)
     ) {
-        items.forEach { (screen, emoji, label) ->
-            val selected = current == screen
+        items.forEach { item ->
+            val selected = current == item.screen
             NavigationBarItem(
                 selected = selected,
-                onClick = { onSelect(screen) },
-                icon = { Text(emoji, fontSize = if (selected) 20.sp else 17.sp) },
+                onClick = { onSelect(item.screen) },
+                icon = { Text(item.emoji, fontSize = if (selected) 21.sp else 18.sp) },
                 label = {
                     Text(
-                        label,
+                        item.label,
                         fontSize = 10.sp,
                         maxLines = 1,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        // Bold throughout: at 10sp on a dark bar, regular
+                        // weight is genuinely hard to read.
+                        fontWeight = FontWeight.Bold
                     )
                 },
                 alwaysShowLabel = true,
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = Color.White,
-                    selectedTextColor = Color(0xFFa5b4fc),
-                    unselectedIconColor = Color.White.copy(alpha = 0.55f),
-                    unselectedTextColor = Color.White.copy(alpha = 0.55f),
-                    indicatorColor = Color(0xFF4338ca)
+                    selectedTextColor = item.accent,
+                    unselectedIconColor = Color.White.copy(alpha = 0.75f),
+                    unselectedTextColor = Color.White.copy(alpha = 0.75f),
+                    indicatorColor = item.accent.copy(alpha = 0.28f)
                 )
             )
         }
@@ -3466,7 +3477,8 @@ fun SpeechNovaApp(
                             ) {
                                 Text(
                                     "Someone else wants to play",
-                                    color = Color.White.copy(alpha = 0.7f)
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                             // Removes the name and its score outright, for
@@ -3484,7 +3496,8 @@ fun SpeechNovaApp(
                                 Text(
                                     "🗑 Delete my name and score",
                                     color = Color(0xFFfca5a5),
-                                    fontSize = 13.sp
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
@@ -3571,7 +3584,7 @@ fun SpeechNovaApp(
                                             containerColor = Color(0xFF334155)
                                         )
                                     ) {
-                                        Text("\uD83D\uDD0A Hear it", fontSize = 14.sp)
+                                        Text("\uD83D\uDD0A Hear it", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                                     }
                                     Spacer(Modifier.width(8.dp))
                                     Button(
@@ -4289,7 +4302,7 @@ fun SpeechNovaApp(
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Done", color = Color.White.copy(alpha = 0.7f))
+                            Text("Done", color = Color.White.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
@@ -4343,7 +4356,7 @@ fun SpeechNovaApp(
             },
             dismissButton = {
                 TextButton(onClick = onDismissUpdate) {
-                    Text("Later", color = Color.White.copy(alpha = 0.7f))
+                    Text("Later", color = Color.White.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -4494,7 +4507,7 @@ fun SpeechNovaApp(
                         onClick = { showVoiceSteps = false },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Not now", color = Color.White.copy(alpha = 0.6f))
+                        Text("Not now", color = Color.White.copy(alpha = 0.6f), fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -4565,10 +4578,10 @@ fun SpeechNovaApp(
                             showWentOfflinePrompt = false
                         }
                     ) {
-                        Text("Don't show again", color = Color.White.copy(alpha = 0.5f))
+                        Text("Don't show again", color = Color.White.copy(alpha = 0.5f), fontWeight = FontWeight.Bold)
                     }
                     TextButton(onClick = { showWentOfflinePrompt = false }) {
-                        Text("OK", color = Color.White.copy(alpha = 0.8f))
+                        Text("OK", color = Color.White.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -4853,7 +4866,8 @@ fun SpeechNovaApp(
                                             Text(
                                                 "Remove",
                                                 color = Color.White.copy(alpha = 0.6f),
-                                                fontSize = 12.sp
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
                                             )
                                         }
                                         else -> Button(
@@ -4875,7 +4889,7 @@ fun SpeechNovaApp(
                                                 containerColor = Color(0xFF10b981)
                                             )
                                         ) {
-                                            Text("Download", fontSize = 12.sp)
+                                            Text("Download", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                 }
@@ -5889,7 +5903,7 @@ private fun LearnScreenContent(
                 ) {
                     Text(
                         label,
-                        color = if (active) Color.White else Color.White.copy(alpha = 0.6f),
+                        color = if (active) Color.White else Color.White.copy(alpha = 0.8f),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
@@ -6371,7 +6385,7 @@ private fun FaceToFaceScreenContent(
                 ) {
                     Text(
                         label,
-                        color = if (active) Color.White else Color.White.copy(alpha = 0.6f),
+                        color = if (active) Color.White else Color.White.copy(alpha = 0.8f),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
