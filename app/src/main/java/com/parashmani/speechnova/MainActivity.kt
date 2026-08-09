@@ -2913,7 +2913,6 @@ fun SpeechNovaApp(
                         if (!hasCameraPermission()) cameraPermLauncher.launch(Manifest.permission.CAMERA)
                         else launchCameraScan()
                     },
-                    onOpenLecture = { currentScreen = Screen.LECTURE },
                     onTranslateText = {
                         pastedResult = ""
                         pastedError = ""
@@ -5285,7 +5284,6 @@ private fun HomeScreenContent(
     onSwapLangs: () -> Unit,
     onScanCamera: () -> Unit,
     onTranslateText: () -> Unit,
-    onOpenLecture: () -> Unit,
     onPlayAll: () -> Unit,
     onClearChat: () -> Unit,
     onListen: (String) -> Unit,
@@ -5368,7 +5366,6 @@ private fun HomeScreenContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    HeaderShortcut("🎓", "Lecture", ACCENT_LECTURE, onOpenLecture)
                     HeaderShortcut("❓", "How to use", ACCENT_HELP, onShowHelp)
                     HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
                     HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
