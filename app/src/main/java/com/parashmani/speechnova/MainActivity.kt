@@ -1042,6 +1042,10 @@ fun SpeechNovaApp(
     // talk without anyone reaching for the phone to change direction. Swapping
     // by hand is for changing the language pair, not for taking turns.
     var faceTurnIsSource by remember { mutableStateOf(true) }
+    // Hands-free flips the turn after every reply. With it off the app stays
+    // in one direction and ⇄ swap is how you change sides — better in a noisy
+    // room, where the wrong person's voice can otherwise grab the turn.
+    var faceHandsFree by remember { mutableStateOf(true) }
 
     // ── Lecture mode ──
     var lectureRecording by remember { mutableStateOf(false) }
@@ -1053,6 +1057,12 @@ fun SpeechNovaApp(
     var lectureSessions by remember { mutableStateOf<List<LectureSession>>(emptyList()) }
     var lectureTitle by remember { mutableStateOf("") }
     var lectureElapsed by remember { mutableIntStateOf(0) }
+    // Set when Start was tapped without mic permission, so recording begins
+    // once the user grants it instead of silently doing nothing.
+    var lectureWantsToStart by remember { mutableStateOf(false) }
+    // Bridges the permission callback, which is declared before startLecture.
+    var startLectureAfterPermission by remember { mutableStateOf(false) }
+    var lectureError by remember { mutableStateOf("") }
 
     // ── Quiz game & the device's learners ──
     var quizQuestions by remember { mutableStateOf<List<QuizQuestion>>(emptyList()) }
@@ -2166,6 +2176,10 @@ fun SpeechNovaApp(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) status = "✅ Permission granted!"
+        if (granted && lectureWantsToStart) {
+            lectureWantsToStart = false
+            handler.post { startLectureAfterPermission = true }
+        }
         else {
             status = "❌ Microphone permission denied"
             isRecording = false
@@ -2193,6 +2207,8 @@ fun SpeechNovaApp(
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            lectureError =
+                "This phone has no speech recognition service, so lectures can't be recorded."
             status = "❌ Speech recognition not available"
             lectureRecording = false
             return
@@ -2261,11 +2277,14 @@ fun SpeechNovaApp(
                 if (lectureRecognizer === sr) lectureRecognizer = null
                 if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                     lectureRecording = false
+                    lectureError = "Microphone permission is needed to record a lecture."
                     status = "❌ Microphone permission denied"
                     return
                 }
                 if (SpeechPacks.looksLikeMissingLanguage(error)) {
                     reportOfflineVoiceMissing(fromLang)
+                    lectureError =
+                        "Nothing is being heard in $fromLang. If you're offline, the voice pack for it may not be installed — see ⚙️ Settings → Set up offline use."
                 }
                 // A lecture has long gaps. Keep going rather than giving up.
                 reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 300)
@@ -2320,9 +2339,12 @@ fun SpeechNovaApp(
 
     fun startLecture() {
         if (!hasMicPermission()) {
+            lectureWantsToStart = true
             permLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
+        lectureWantsToStart = false
+        lectureError = ""
         lectureChunks.clear()
         lectureLive = ""
         lectureStartedAt = System.currentTimeMillis()
@@ -2330,6 +2352,15 @@ fun SpeechNovaApp(
         lectureElapsed = 0
         lectureRecording = true
         startLectureListening()
+    }
+
+    // The permission result arrives in a launcher declared above startLecture,
+    // so it raises a flag and this picks it up.
+    LaunchedEffect(startLectureAfterPermission) {
+        if (startLectureAfterPermission) {
+            startLectureAfterPermission = false
+            startLecture()
+        }
     }
 
     fun stopLecture() {
@@ -2664,10 +2695,10 @@ fun SpeechNovaApp(
         val finishedSeq = faceReplySeq
         handler.postDelayed({
             if (faceReplySeq == finishedSeq) {
-                // The reply has been said, so the other person is the one who
-                // speaks next. Flipping here rather than when the mic reopens
-                // keeps the turn and the recognizer language in step.
-                faceTurnIsSource = !faceTurnIsSource
+                // The reply has been said, so in hands-free mode the other
+                // person speaks next. Flipping here rather than when the mic
+                // reopens keeps the turn and the recognizer language in step.
+                if (faceHandsFree) faceTurnIsSource = !faceTurnIsSource
                 isFaceReplying = false
             }
         }, FACE_ECHO_GUARD_MS)
@@ -2756,9 +2787,9 @@ fun SpeechNovaApp(
     // the list is still loading comes out short or empty; this picks it up
     // when loading finishes, and again whenever the language changes.
     LaunchedEffect(currentScreen, learnLang, vocabLoading, vocabulary.size) {
-        if (currentScreen == Screen.QUIZ && !vocabLoading &&
-            (quizLang != learnLang || quizQuestions.isEmpty())
-        ) {
+        if (currentScreen != Screen.QUIZ) return@LaunchedEffect
+        val ready = vocabulary.count { it.translated.isNotBlank() } >= 4
+        if (ready && (quizLang != learnLang || quizQuestions.isEmpty())) {
             startQuiz()
         }
     }
@@ -2864,6 +2895,11 @@ fun SpeechNovaApp(
                         showTextTranslate = true
                     },
                     onPlayAll = { repeatAllConversation() },
+                    onClearChat = {
+                        // Keep anything starred; that list is the point of ⭐ Saved.
+                        messages.removeAll { !it.isFavorite.value }
+                        status = "🗑 Conversation cleared"
+                    },
                     onListen = { text -> repeatSpeech(text, toLang) },
                     onCopy = { text -> copyToClipboard(text) },
                     onShare = { text -> shareText(text) },
@@ -2905,7 +2941,6 @@ fun SpeechNovaApp(
                     onSpeakLetter = { glyph -> speakLetter(glyph, learnLang) },
                     onHearWord = { word -> speakLetter(word, learnLang) },
                     onPracticeWord = { word -> practiceWord(word, learnLang) },
-                    onPlayQuiz = { startQuiz(); currentScreen = Screen.QUIZ },
                     onAddWord = {
                         newWordTranslated = ""
                         newWordError = ""
@@ -3013,6 +3048,33 @@ fun SpeechNovaApp(
                         )
                     }
 
+                    if (lectureError.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF7f1d1d),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                "⚠️ $lectureError",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+
+                    if (lectureRecording && lectureChunks.isEmpty() && lectureLive.isBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "🎙 Listening in $fromLang. Nothing heard yet — start speaking, or check the phone can hear the room.",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
+
                     if (lectureRecording && lectureLive.isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
                         Text(
@@ -3051,20 +3113,20 @@ fun SpeechNovaApp(
                                         )
                                     )
                                 }
-                                MiniLabeledIcon(emoji = "📤", label = "Share") {
-                                    shareText(
-                                        Lectures.asText(
-                                            LectureSession(
-                                                0L,
-                                                lectureTitle.ifBlank { "Lecture" },
-                                                Lectures.dateNow(),
-                                                fromLang,
-                                                toLang,
-                                                lectureElapsed,
-                                                lectureChunks.toList()
-                                            )
+                                MiniLabeledIcon(emoji = "📄", label = "Export") {
+                                    val ok = Lectures.exportToFile(
+                                        context,
+                                        LectureSession(
+                                            0L,
+                                            lectureTitle.ifBlank { "Lecture" },
+                                            Lectures.dateNow(),
+                                            fromLang,
+                                            toLang,
+                                            lectureElapsed,
+                                            lectureChunks.toList()
                                         )
                                     )
+                                    if (!ok) status = "❌ Couldn't export the lecture"
                                 }
                             }
                         }
@@ -3149,6 +3211,11 @@ fun SpeechNovaApp(
                                             fontSize = 11.sp
                                         )
                                     }
+                                    MiniLabeledIcon(emoji = "📄", label = "Export") {
+                                        if (!Lectures.exportToFile(context, session)) {
+                                            status = "❌ Couldn't export the lecture"
+                                        }
+                                    }
                                     MiniLabeledIcon(emoji = "📤", label = "Share") {
                                         shareText(Lectures.asText(session))
                                     }
@@ -3214,7 +3281,8 @@ fun SpeechNovaApp(
                     when {
                         // Still translating the word list for this language —
                         // building a round now would drop most of the words.
-                        vocabLoading || (quizLang != learnLang) -> {
+                        quizQuestions.isEmpty() &&
+                            (vocabLoading || vocabulary.count { it.translated.isNotBlank() } < 4) -> {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(
                                     color = Color(0xFF34d399),
@@ -3482,6 +3550,13 @@ fun SpeechNovaApp(
                     micLevel = micLevel,
                     paused = facePaused,
                     turnIsSource = faceTurnIsSource,
+                    handsFree = faceHandsFree,
+                    onToggleHandsFree = {
+                        faceHandsFree = !faceHandsFree
+                        // Leaving hands-free hands the turn back to whoever
+                        // owns the source side, so the state is predictable.
+                        if (!faceHandsFree) faceTurnIsSource = true
+                    },
                     onTogglePause = { facePaused = !facePaused },
                     onSwapLangs = {
                         // Just change the languages — the effect above owns the
@@ -3548,9 +3623,6 @@ fun SpeechNovaApp(
             if (target != Screen.LEARN) stopPractice()
             if (target != Screen.HOME && isRecording) stopRecording()
             if (target != Screen.LECTURE && lectureRecording) stopLecture()
-            // Arriving on the Quiz tab always starts a fresh round rather than
-            // dropping the player back into a half-finished one.
-            if (target == Screen.QUIZ && currentScreen != Screen.QUIZ) startQuiz()
             currentScreen = target
         }
     }
@@ -5108,6 +5180,7 @@ private fun HomeScreenContent(
     onTranslateText: () -> Unit,
     onOpenLecture: () -> Unit,
     onPlayAll: () -> Unit,
+    onClearChat: () -> Unit,
     onListen: (String) -> Unit,
     onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
@@ -5166,32 +5239,12 @@ private fun HomeScreenContent(
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "SpeechNova",
-                                    color = Color.White,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                // Small caps badge, borrowed from the web build.
-                                Surface(
-                                    color = Color.White.copy(alpha = 0.18f),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Text(
-                                        "PRO",
-                                        color = Color(0xFFe0e7ff),
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 1.5.sp,
-                                        modifier = Modifier.padding(
-                                            horizontal = 5.dp,
-                                            vertical = 2.dp
-                                        )
-                                    )
-                                }
-                            }
+                            Text(
+                                "SpeechNova",
+                                color = Color.White,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
                             Text(
                                 "Speech translation & language learning",
                                 color = Color(0xFFe0e7ff),
@@ -5199,57 +5252,6 @@ private fun HomeScreenContent(
                                 fontWeight = FontWeight.Medium
                             )
                         }
-                    }
-                }
-
-                // The language pair, swappable without scrolling to the
-                // pickers below. The web build puts this in the header and it
-                // is the right call: it is the control people reach for most.
-                Spacer(Modifier.height(12.dp))
-                Surface(
-                    color = Color.White.copy(alpha = 0.14f),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            fromLang,
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f),
-                            textAlign = TextAlign.End
-                        )
-                        Surface(
-                            color = Color.White.copy(alpha = 0.2f),
-                            shape = CircleShape,
-                            modifier = Modifier
-                                .padding(horizontal = 10.dp)
-                                .clip(CircleShape)
-                                .clickable(onClick = onSwapLangs)
-                        ) {
-                            Text(
-                                "⇄",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                        Text(
-                            toLang,
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f),
-                            textAlign = TextAlign.Start
-                        )
                     }
                 }
 
@@ -5293,23 +5295,48 @@ private fun HomeScreenContent(
                     Text(status, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
                 }
 
-                if (messages.any { it.type == "translation" }) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(Color(0xFF334155))
-                            .clickable(onClick = onPlayAll)
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Text("🔊", fontSize = 15.sp)
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "Play all",
-                            color = Color.White.copy(alpha = 0.9f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                if (messages.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (messages.any { it.type == "translation" }) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(Color(0xFF334155))
+                                    .clickable(onClick = onPlayAll)
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text("🔊", fontSize = 15.sp)
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Play all",
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        // There was no way to empty the conversation at all —
+                        // it just grew until the app was restarted. Saved
+                        // translations live in ⭐ Saved and survive this.
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color(0xFF334155))
+                                .clickable(onClick = onClearChat)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text("🗑", fontSize = 15.sp)
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "Clear",
+                                color = Color.White.copy(alpha = 0.9f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
             }
@@ -5667,7 +5694,6 @@ private fun LearnScreenContent(
     onSpeakLetter: (String) -> Unit,
     onHearWord: (String) -> Unit,
     onPracticeWord: (String) -> Unit,
-    onPlayQuiz: () -> Unit,
     onAddWord: () -> Unit,
     customWords: Set<String>,
     onDeleteWord: (String) -> Unit
@@ -5873,15 +5899,6 @@ private fun LearnScreenContent(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
         ) {
-            Button(
-                onClick = onPlayQuiz,
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8b5cf6))
-            ) {
-                Text("\uD83C\uDFAE Play quiz", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.width(8.dp))
             Button(
                 onClick = onAddWord,
                 modifier = Modifier.weight(1f).height(46.dp),
@@ -6208,6 +6225,8 @@ private fun FaceToFaceScreenContent(
     micLevel: Float,
     paused: Boolean,
     turnIsSource: Boolean,
+    handsFree: Boolean,
+    onToggleHandsFree: () -> Unit,
     onTogglePause: () -> Unit,
     onSwapLangs: () -> Unit
 ) {
@@ -6238,6 +6257,38 @@ private fun FaceToFaceScreenContent(
             }
         }
 
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        ) {
+            listOf(
+                true to "🙌 Hands-free",
+                false to "⇄ Take turns by hand"
+            ).forEach { (mode, label) ->
+                val active = handsFree == mode
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = if (mode) 6.dp else 0.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { if (handsFree != mode) onToggleHandsFree() },
+                    color = if (active) Color(0xFF6366f1) else Color(0xFF1e293b),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        label,
+                        color = if (active) Color.White else Color.White.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp)
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -6248,6 +6299,7 @@ private fun FaceToFaceScreenContent(
             Text(
                 when {
                     paused -> "Paused — tap Resume listening above"
+                    !handsFree && turnIsSource -> "🎙 Listening in $fromLang. Tap ⇄ swap for the other direction."
                     turnIsSource -> "🎙 Your turn — speak in $fromLang"
                     else -> "🎙 Their turn — they speak in $toLang"
                 },
