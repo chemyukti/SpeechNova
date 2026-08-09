@@ -427,6 +427,7 @@ private val HEADER_GRADIENT = listOf(
     Color(0xFFdb2777)  // rose
 )
 private val ACCENT_LECTURE = Color(0xFFc084fc)   // purple
+private val ACCENT_QUIZ = Color(0xFFa78bfa)      // violet
 private val ACCENT_HELP = Color(0xFFfbbf24)      // amber
 private val ACCENT_TEXT = Color(0xFF38bdf8)      // sky
 private val ACCENT_SCAN = Color(0xFF34d399)      // emerald
@@ -514,6 +515,69 @@ private fun adaptiveBannerSize(context: android.content.Context): AdSize {
 // card that used to sit on the Learn screen made two there, because the banner
 // is on every screen. Rather than juggle which screen may show which format,
 // there is now one format in one place and nothing to get wrong.
+
+/**
+ * The scores kept on this phone.
+ *
+ * Every name carries its own delete, not just the one playing: a phone gets
+ * handed around, and a mistyped or abandoned name should not be stuck on the
+ * board with no way to remove it.
+ */
+@Composable
+private fun Leaderboard(
+    entries: List<Learner>,
+    currentName: String?,
+    onDelete: (String) -> Unit
+) {
+    if (entries.isEmpty()) return
+    Text(
+        "🏆 SCORES ON THIS PHONE",
+        color = Color(0xFFa5b4fc),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold
+    )
+    Spacer(Modifier.height(6.dp))
+    entries.forEachIndexed { position, learner ->
+        val isYou = learner.name.equals(currentName, ignoreCase = true)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                when (position) {
+                    0 -> "🥇"
+                    1 -> "🥈"
+                    2 -> "🥉"
+                    else -> "  "
+                },
+                fontSize = 15.sp
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (isYou) "${learner.name} (you)" else learner.name,
+                color = if (isYou) Color(0xFF6ee7b7) else Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "${learner.points}",
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            IconButton(
+                onClick = { onDelete(learner.name) },
+                modifier = Modifier.size(30.dp)
+            ) {
+                Text("🗑", fontSize = 13.sp)
+            }
+        }
+    }
+}
 
 // A row of preset chips. Chips rather than a slider because a thumb can hit
 // them accurately on a phone, which a 5px slider track cannot promise.
@@ -747,11 +811,10 @@ private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
     )
     val items = listOf(
         NavItem(Screen.HOME, "🏠", "Home", Color(0xFF34d399)),
-        NavItem(Screen.LECTURE, "🎓", "Class", ACCENT_LECTURE),
+        NavItem(Screen.LECTURE, "🎓", "Lecture", ACCENT_LECTURE),
         NavItem(Screen.LEARN, "📚", "Learn", Color(0xFF38bdf8)),
-        NavItem(Screen.PHRASES, "📖", "Say", Color(0xFFfbbf24)),
-        NavItem(Screen.FACE2FACE, "🎭", "Face", Color(0xFFf472b6)),
-        NavItem(Screen.QUIZ, "🎮", "Quiz", Color(0xFFa78bfa))
+        NavItem(Screen.PHRASES, "📖", "Phrases", Color(0xFFfbbf24)),
+        NavItem(Screen.FACE2FACE, "🎭", "Face to Face", Color(0xFFf472b6))
     )
     NavigationBar(
         containerColor = Color(0xFF0b1220),
@@ -768,7 +831,11 @@ private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
                     Text(
                         item.label,
                         fontSize = 10.sp,
-                        maxLines = 1,
+                        // Two lines so "Face to Face" can be written out
+                        // rather than clipped to something that isn't a word.
+                        maxLines = 2,
+                        lineHeight = 11.sp,
+                        textAlign = TextAlign.Center,
                         // Bold throughout: at 10sp on a dark bar, regular
                         // weight is genuinely hard to read.
                         fontWeight = FontWeight.Bold
@@ -1616,7 +1683,7 @@ fun SpeechNovaApp(
         if (!scriptSupportsOcr(fromLang)) {
             messages.add(
                 TranslationMessage(
-                    displayText = "📷 Camera scan isn't available for $fromLang yet — the on-device reader doesn't support that script. Try speaking instead, or use 📖 Say.",
+                    displayText = "📷 Camera scan isn't available for $fromLang yet — the on-device reader doesn't support that script. Try speaking instead, or use 📖 Phrases.",
                     type = "system"
                 )
             )
@@ -2453,6 +2520,27 @@ fun SpeechNovaApp(
         cameraCaptureLauncher.launch(uri)
     }
 
+    // Reading a text file the user picked, as an alternative to pasting.
+    val textFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val picked = readPickedText(context, uri)
+        when {
+            picked.error != null -> pastedError = picked.error
+            else -> {
+                pastedText = picked.text
+                pastedResult = ""
+                pastedDetectedLang = null
+                pastedError = if (picked.truncated) {
+                    "That file is very long, so the first ${MAX_TEXT_CHARS / 1000},000 characters were loaded."
+                } else {
+                    ""
+                }
+            }
+        }
+    }
+
     val cameraPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -2790,6 +2878,12 @@ fun SpeechNovaApp(
     // Lecture clock, and the saved list when the tab opens.
     LaunchedEffect(currentScreen) {
         if (currentScreen == Screen.LECTURE) lectureSessions = Lectures.all(context)
+        // The board was only loaded when a round started, so arriving at the
+        // name screen showed nothing even when scores existed.
+        if (currentScreen == Screen.QUIZ) {
+            learnerName = Progress.currentLearner(context)
+            refreshLeaderboard()
+        }
     }
     LaunchedEffect(lectureRecording) {
         while (lectureRecording) {
@@ -2913,6 +3007,7 @@ fun SpeechNovaApp(
                         if (!hasCameraPermission()) cameraPermLauncher.launch(Manifest.permission.CAMERA)
                         else launchCameraScan()
                     },
+                    onOpenQuiz = { currentScreen = Screen.QUIZ },
                     onTranslateText = {
                         pastedResult = ""
                         pastedError = ""
@@ -2998,7 +3093,7 @@ fun SpeechNovaApp(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "🎓 Class",
+                            "🎓 Lecture",
                             color = Color.White,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold
@@ -3387,6 +3482,17 @@ fun SpeechNovaApp(
                             ) {
                                 Text("Start playing", fontWeight = FontWeight.Bold)
                             }
+                            if (leaderboard.isNotEmpty()) {
+                                Spacer(Modifier.height(18.dp))
+                                Leaderboard(
+                                    entries = leaderboard,
+                                    currentName = learnerName,
+                                    onDelete = { name ->
+                                        Progress.deleteLearner(context, name)
+                                        refreshLeaderboard()
+                                    }
+                                )
+                            }
                         }
 
                         quizQuestions.isEmpty() -> {
@@ -3414,46 +3520,18 @@ fun SpeechNovaApp(
                                 fontSize = 13.sp
                             )
                             Spacer(Modifier.height(16.dp))
-                            Text(
-                                "\uD83C\uDFC6 SCORES ON THIS PHONE",
-                                color = Color(0xFFa5b4fc),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            leaderboard.forEachIndexed { position, learner ->
-                                val isYou = learner.name.equals(learnerName, ignoreCase = true)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        when (position) {
-                                            0 -> "\uD83E\uDD47"
-                                            1 -> "\uD83E\uDD48"
-                                            2 -> "\uD83E\uDD49"
-                                            else -> "  "
-                                        },
-                                        fontSize = 15.sp
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        if (isYou) "${learner.name} (you)" else learner.name,
-                                        color = if (isYou) Color(0xFF6ee7b7) else Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = if (isYou) FontWeight.Bold else FontWeight.Normal,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        "${learner.points}",
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                            Leaderboard(
+                                entries = leaderboard,
+                                currentName = learnerName,
+                                onDelete = { name ->
+                                    Progress.deleteLearner(context, name)
+                                    if (name.equals(learnerName, ignoreCase = true)) {
+                                        learnerName = null
+                                        nameEntry = ""
+                                    }
+                                    refreshLeaderboard()
                                 }
-                            }
+                            )
                             Spacer(Modifier.height(16.dp))
                             Button(
                                 onClick = { startQuiz() },
@@ -3480,25 +3558,7 @@ fun SpeechNovaApp(
                                     fontWeight = FontWeight.Bold
                                 )
                             }
-                            // Removes the name and its score outright, for
-                            // getting a mistyped one off the board.
-                            TextButton(
-                                onClick = {
-                                    learnerName?.let { Progress.deleteLearner(context, it) }
-                                    Progress.switchLearner(context)
-                                    learnerName = null
-                                    nameEntry = ""
-                                    refreshLeaderboard()
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    "🗑 Delete my name and score",
-                                    color = Color(0xFFfca5a5),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+
                         }
 
                         // A question.
@@ -4551,7 +4611,7 @@ fun SpeechNovaApp(
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "You can still type or paste text with 📝 Text, and use 📖 Say.",
+                        "You can still type or paste text with 📝 Text, and use 📖 Phrases.",
                         color = Color.White.copy(alpha = 0.7f),
                         fontSize = 13.sp,
                         lineHeight = 19.sp
@@ -4951,7 +5011,7 @@ fun SpeechNovaApp(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Paste or type anything. SpeechNova works out which language it is, then translates it into $toLang.",
+                        "Paste, type, or open a text file. SpeechNova works out which language it is, then translates it into $toLang. Files up to 50 MB, as long as they're plain text — a PDF or Word file has to be copied out of its own app first.",
                         color = Color.White.copy(alpha = 0.65f),
                         fontSize = 12.sp,
                         lineHeight = 17.sp
@@ -5012,21 +5072,54 @@ fun SpeechNovaApp(
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            onClick = { translatePastedText() },
-                            enabled = !pastedBusy && pastedText.isNotBlank(),
+                            onClick = {
+                                pastedError = ""
+                                // Anything text-based; the reader turns away
+                                // formats it can't actually read.
+                                textFileLauncher.launch(
+                                    arrayOf(
+                                        "text/*",
+                                        "application/json",
+                                        "application/xml",
+                                        "application/rtf"
+                                    )
+                                )
+                            },
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10b981),
-                                disabledContainerColor = Color(0xFF374151)
+                                containerColor = Color(0xFF334155)
                             )
                         ) {
-                            Text(
-                                if (pastedBusy) "⏳ Working…" else "🌍 Translate",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text("📎 File", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { translatePastedText() },
+                        enabled = !pastedBusy && pastedText.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF10b981),
+                            disabledContainerColor = Color(0xFF374151)
+                        )
+                    ) {
+                        Text(
+                            if (pastedBusy) "⏳ Working…" else "🌍 Translate",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (pastedText.length > 400) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "${pastedText.length} characters loaded",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 11.sp
+                        )
                     }
 
                     if (pastedDetectedLang != null) {
@@ -5178,7 +5271,7 @@ fun SpeechNovaApp(
                         }
 
                         HelpSection("Getting started")
-                        HelpStep("1", "Six simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 🎓 Class to record a lecture, 📚 Learn the alphabet, 📖 Say for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
+                        HelpStep("1", "Five tabs and a top row", "Along the bottom: 🏠 Home to translate, 🎓 Lecture to record a class, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, and 🎭 Face to Face for talking with someone. Along the top: 🎮 Quiz, 📝 Text, 📷 Scan, ⭐ Saved, plus help and settings in the corner.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
                         HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works with no internet.")
                         HelpStep("4", "📦 Going somewhere with no signal?", "Translating between two languages needs a pack for each one (English is built in), so Hindi → Bengali needs both. Open ⚙️ Settings → Offline languages and download what you'll need before you travel — offline, they can't be fetched.")
@@ -5197,7 +5290,7 @@ fun SpeechNovaApp(
                         HelpStep("13", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
                         HelpSection("Sitting in a class or a talk")
-                        HelpStep("14", "🎓 Class", "Name the talk, tap Start recording, and put the phone down. It listens for as long as the class runs and translates as it goes, without speaking out loud. Filler words like \"um\" are dropped so the translation reads cleanly.")
+                        HelpStep("14", "🎓 Lecture", "Name the talk, tap Start recording, and put the phone down. It listens for as long as the class runs and translates as it goes, without speaking out loud. Filler words like \"um\" are dropped so the translation reads cleanly.")
                         HelpStep("15", "Finding your place afterwards", "Every part is stamped with how far into the talk it came, and long pauses are marked, so you can match the transcript to what you remember. Tap Stop and save to keep it.")
                         HelpStep("16", "Sharing your notes", "Copy or share a lecture as plain text, during or after. Saved lectures are listed under the record button and stay on your phone.")
 
@@ -5205,9 +5298,9 @@ fun SpeechNovaApp(
                         HelpStep("18", "⏹ STOP stops the voice too", "If a long scan or paragraph is being read out, STOP ends both the listening and the speaking.")
 
                         HelpSection("Other ways to translate")
-                        HelpStep("19", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
+                        HelpStep("19", "📝 Text", "Type, paste, or open a text file — anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was. Files up to 50 MB, as long as they're plain text.")
                         HelpStep("20", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("21", "📖 Say", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("21", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
                         HelpStep("22", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
                         HelpStep("23", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
@@ -5284,6 +5377,7 @@ private fun HomeScreenContent(
     onSwapLangs: () -> Unit,
     onScanCamera: () -> Unit,
     onTranslateText: () -> Unit,
+    onOpenQuiz: () -> Unit,
     onPlayAll: () -> Unit,
     onClearChat: () -> Unit,
     onListen: (String) -> Unit,
@@ -5396,6 +5490,7 @@ private fun HomeScreenContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
+                    HeaderShortcut("🎮", "Quiz", ACCENT_QUIZ, onOpenQuiz)
                     HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
                     HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
                     HeaderShortcut("⭐", "Saved", ACCENT_SAVED, onShowFavorites)
@@ -5626,7 +5721,7 @@ private fun HomeScreenContent(
                                 textAlign = TextAlign.Center
                             )
                             Text(
-                                "Or tap 📖 Say in the bottom bar for ready-made sentences",
+                                "Or tap 📖 Phrases in the bottom bar for ready-made sentences",
                                 color = Color.White.copy(alpha = 0.5f),
                                 fontSize = 12.sp,
                                 textAlign = TextAlign.Center,
@@ -6268,7 +6363,7 @@ private fun PhrasesScreenContent(
                 }
                 Column {
                     Text(
-                        selectedCategory?.let { "${it.emoji}  ${it.name}" } ?: "📖 Say",
+                        selectedCategory?.let { "${it.emoji}  ${it.name}" } ?: "📖 Phrases",
                         color = Color.White,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
