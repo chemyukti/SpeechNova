@@ -747,9 +747,9 @@ private fun SpeechNovaBottomBar(current: Screen, onSelect: (Screen) -> Unit) {
     )
     val items = listOf(
         NavItem(Screen.HOME, "🏠", "Home", Color(0xFF34d399)),
-        NavItem(Screen.LECTURE, "🎓", "Lecture", ACCENT_LECTURE),
+        NavItem(Screen.LECTURE, "🎓", "Class", ACCENT_LECTURE),
         NavItem(Screen.LEARN, "📚", "Learn", Color(0xFF38bdf8)),
-        NavItem(Screen.PHRASES, "📖", "Phrases", Color(0xFFfbbf24)),
+        NavItem(Screen.PHRASES, "📖", "Say", Color(0xFFfbbf24)),
         NavItem(Screen.FACE2FACE, "🎭", "Face", Color(0xFFf472b6)),
         NavItem(Screen.QUIZ, "🎮", "Quiz", Color(0xFFa78bfa))
     )
@@ -1616,7 +1616,7 @@ fun SpeechNovaApp(
         if (!scriptSupportsOcr(fromLang)) {
             messages.add(
                 TranslationMessage(
-                    displayText = "📷 Camera scan isn't available for $fromLang yet — the on-device reader doesn't support that script. Try speaking instead, or use 📖 Phrases.",
+                    displayText = "📷 Camera scan isn't available for $fromLang yet — the on-device reader doesn't support that script. Try speaking instead, or use 📖 Say.",
                     type = "system"
                 )
             )
@@ -2999,7 +2999,7 @@ fun SpeechNovaApp(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "🎓 Lecture",
+                            "🎓 Class",
                             color = Color.White,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold
@@ -4552,7 +4552,7 @@ fun SpeechNovaApp(
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "You can still type or paste text with 📝 Text, and use 📖 Phrases.",
+                        "You can still type or paste text with 📝 Text, and use 📖 Say.",
                         color = Color.White.copy(alpha = 0.7f),
                         fontSize = 13.sp,
                         lineHeight = 19.sp
@@ -5179,7 +5179,7 @@ fun SpeechNovaApp(
                         }
 
                         HelpSection("Getting started")
-                        HelpStep("1", "Six simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 🎓 Lecture to record a class, 📚 Learn the alphabet, 📖 Phrases for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
+                        HelpStep("1", "Six simple tabs", "Use the bar at the bottom: 🏠 Home to translate, 🎓 Class to record a lecture, 📚 Learn the alphabet, 📖 Say for ready-made sentences, 🎭 Face for talking with someone, and 🎮 Quiz to test yourself.")
                         HelpStep("2", "Pick your languages", "On Home, tap the two boxes near the top — for example English → Hindi. Tap the ⇄ arrow between them to swap the direction.")
                         HelpStep("3", "First time with a language pair?", "The app downloads a small language pack — usually under a minute. After that translating works with no internet.")
                         HelpStep("4", "📦 Going somewhere with no signal?", "Translating between two languages needs a pack for each one (English is built in), so Hindi → Bengali needs both. Open ⚙️ Settings → Offline languages and download what you'll need before you travel — offline, they can't be fetched.")
@@ -5198,7 +5198,7 @@ fun SpeechNovaApp(
                         HelpStep("13", "📤 Share", "Sends the translation straight to WhatsApp, SMS, email — whatever you have installed.")
 
                         HelpSection("Sitting in a class or a talk")
-                        HelpStep("14", "🎓 Lecture", "Name the talk, tap Start recording, and put the phone down. It listens for as long as the class runs and translates as it goes, without speaking out loud. Filler words like \"um\" are dropped so the translation reads cleanly.")
+                        HelpStep("14", "🎓 Class", "Name the talk, tap Start recording, and put the phone down. It listens for as long as the class runs and translates as it goes, without speaking out loud. Filler words like \"um\" are dropped so the translation reads cleanly.")
                         HelpStep("15", "Finding your place afterwards", "Every part is stamped with how far into the talk it came, and long pauses are marked, so you can match the transcript to what you remember. Tap Stop and save to keep it.")
                         HelpStep("16", "Sharing your notes", "Copy or share a lecture as plain text, during or after. Saved lectures are listed under the record button and stay on your phone.")
 
@@ -5208,7 +5208,7 @@ fun SpeechNovaApp(
                         HelpSection("Other ways to translate")
                         HelpStep("19", "📝 Text", "Type or paste anything — a message, an email, a website — and SpeechNova works out which language it's in on its own, then translates it. You don't have to know what language it was.")
                         HelpStep("20", "📷 Scan", "Point the camera at printed text — a sign, a menu, a form — and take the photo. The app reads the text and translates it. Hold steady and fill the frame for the best results.")
-                        HelpStep("21", "📖 Phrases", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
+                        HelpStep("21", "📖 Say", "Ready-made sentences grouped by situation, for when you'd rather not speak at all. Tap one to have it translated and read aloud.")
                         HelpStep("22", "🎭 Face-to-Face", "Lay the phone flat between you and the other person. It listens and translates continuously, with no buttons to press — your words appear on your side and the translation on theirs, the right way up for each of you.")
                         HelpStep("23", "⇄ swap, mid-conversation", "In Face-to-Face, tap ⇄ swap when it's the other person's turn to speak. It switches direction straight away and keeps listening — you don't have to leave the screen and come back.")
 
@@ -5601,7 +5601,7 @@ private fun HomeScreenContent(
                                 textAlign = TextAlign.Center
                             )
                             Text(
-                                "Or tap 📖 Phrases in the bottom bar for ready-made sentences",
+                                "Or tap 📖 Say in the bottom bar for ready-made sentences",
                                 color = Color.White.copy(alpha = 0.5f),
                                 fontSize = 12.sp,
                                 textAlign = TextAlign.Center,
@@ -6243,7 +6243,7 @@ private fun PhrasesScreenContent(
                 }
                 Column {
                     Text(
-                        selectedCategory?.let { "${it.emoji}  ${it.name}" } ?: "📖 Phrases",
+                        selectedCategory?.let { "${it.emoji}  ${it.name}" } ?: "📖 Say",
                         color = Color.White,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
