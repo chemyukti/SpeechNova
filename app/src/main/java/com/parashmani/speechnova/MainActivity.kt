@@ -5359,18 +5359,34 @@ private fun HomeScreenContent(
                         }
                     }
 
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.35f))
-                            .padding(2.dp)
-                            .clip(CircleShape)
-                            .background(ACCENT_SETTINGS)
-                            .clickable(onClick = onShowSettings),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("⚙️", fontSize = 17.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.35f))
+                                .padding(2.dp)
+                                .clip(CircleShape)
+                                .background(ACCENT_HELP)
+                                .clickable(onClick = onShowHelp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("❓", fontSize = 17.sp)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.35f))
+                                .padding(2.dp)
+                                .clip(CircleShape)
+                                .background(ACCENT_SETTINGS)
+                                .clickable(onClick = onShowSettings),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("⚙️", fontSize = 17.sp)
+                        }
                     }
                 }
 
@@ -5380,7 +5396,6 @@ private fun HomeScreenContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    HeaderShortcut("❓", "How to use", ACCENT_HELP, onShowHelp)
                     HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
                     HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
                     HeaderShortcut("⭐", "Saved", ACCENT_SAVED, onShowFavorites)
