@@ -515,8 +515,8 @@ private fun adaptiveBannerSize(context: android.content.Context): AdSize {
 // is on every screen. Rather than juggle which screen may show which format,
 // there is now one format in one place and nothing to get wrong.
 
-// A settings toggle that always explains what it does in a full sentence,
-// not just a two-word label — this is what the Settings dialog is built from.
+// A row of preset chips. Chips rather than a slider because a thumb can hit
+// them accurately on a phone, which a 5px slider track cannot promise.
 @Composable
 private fun PresetRow(
     label: String,
@@ -571,6 +571,9 @@ private fun PresetRow(
     }
 }
 
+// A settings toggle that always explains what it does in a full sentence,
+// not just a two-word label — this is what the Settings dialog is built from.
+@Composable
 private fun SettingRow(
     title: String,
     description: String,
@@ -1651,182 +1654,6 @@ fun SpeechNovaApp(
         }
     }
 
-    // ── LECTURE: capture a long talk and translate it as it goes ──
-    // The same continuous-recognition loop as Face-to-Face, but nothing is
-    // spoken back — a phone talking during a lecture is the last thing anyone
-    // wants — so there is no echo to guard against and the mic can simply stay
-    // open. Results are kept as timestamped chunks rather than one block of
-    // text, because a student needs to find their place afterwards.
-    fun stopLectureListening() {
-        lectureRecognizer?.destroy()
-        lectureRecognizer = null
-    }
-
-    fun startLectureListening() {
-        if (!lectureRecording || currentScreen != Screen.LECTURE) {
-            stopLectureListening()
-            return
-        }
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            status = "❌ Speech recognition not available"
-            lectureRecording = false
-            return
-        }
-        lectureRecognizer?.destroy()
-        val sr = SpeechRecognizer.createSpeechRecognizer(context)
-        lectureRecognizer = sr
-
-        fun reArm(delayMs: Long) {
-            handler.postDelayed({
-                if (lectureRecording && currentScreen == Screen.LECTURE) {
-                    startLectureListening()
-                } else {
-                    stopLectureListening()
-                }
-            }, delayMs)
-        }
-
-        fun addChunk(heard: String) {
-            val cleaned = TextCleaner.clean(heard, fromLang)
-            if (cleaned.isBlank()) return
-            val now = System.currentTimeMillis()
-            val gapMs = if (lastLectureResultAt == 0L) 0L else now - lastLectureResultAt
-            lastLectureResultAt = now
-            val offset = ((now - lectureStartedAt) / 1000).toInt()
-
-            fun append(translated: String) {
-                lectureChunks.add(
-                    LectureChunk(
-                        clockTime = Lectures.clockNow(),
-                        offsetLabel = Lectures.formatDuration(offset),
-                        original = cleaned,
-                        translated = translated,
-                        afterPauseSeconds =
-                            if (gapMs >= LECTURE_PAUSE_MS) (gapMs / 1000).toInt() else 0
-                    )
-                )
-            }
-
-            if (fromLang == toLang) {
-                append(cleaned)
-                return
-            }
-            val translator = mlTranslator
-            if (translator == null) {
-                append("")
-                return
-            }
-            translator.translate(cleaned)
-                .addOnSuccessListener { append(it.trim()) }
-                .addOnFailureListener { append("") }
-        }
-
-        sr.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {
-                micLevel = (rmsdB.coerceIn(0f, 10f)) / 10f
-            }
-            override fun onBufferReceived(b: ByteArray?) {}
-            override fun onEndOfSpeech() { micLevel = 0f }
-
-            override fun onError(error: Int) {
-                micLevel = 0f
-                sr.destroy()
-                if (lectureRecognizer === sr) lectureRecognizer = null
-                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-                    lectureRecording = false
-                    status = "❌ Microphone permission denied"
-                    return
-                }
-                if (SpeechPacks.looksLikeMissingLanguage(error)) {
-                    reportOfflineVoiceMissing(fromLang)
-                }
-                // A lecture has long gaps. Keep going rather than giving up.
-                reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 300)
-            }
-
-            override fun onResults(results: Bundle?) {
-                micLevel = 0f
-                val heard = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()?.trim().orEmpty()
-                sr.destroy()
-                if (lectureRecognizer === sr) lectureRecognizer = null
-                lectureLive = ""
-                if (heard.isNotBlank()) addChunk(heard)
-                reArm(200)
-            }
-
-            override fun onPartialResults(partial: Bundle?) {
-                val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                if (!t.isNullOrBlank()) lectureLive = t
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[fromLang] ?: "en-IN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra("android.speech.extra.DICTATION_MODE", true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
-            putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
-                SPEECH_COMPLETE_SILENCE_MS
-            )
-            putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-                SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
-            )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
-            }
-        }
-        try {
-            sr.startListening(intent)
-        } catch (_: Exception) {
-            reArm(800)
-        }
-    }
-
-    fun startLecture() {
-        if (!hasMicPermission()) {
-            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        lectureChunks.clear()
-        lectureLive = ""
-        lectureStartedAt = System.currentTimeMillis()
-        lastLectureResultAt = 0L
-        lectureElapsed = 0
-        lectureRecording = true
-        startLectureListening()
-    }
-
-    fun stopLecture() {
-        lectureRecording = false
-        stopLectureListening()
-        micLevel = 0f
-        lectureLive = ""
-        if (lectureChunks.isEmpty()) return
-        val session = LectureSession(
-            id = System.currentTimeMillis(),
-            title = lectureTitle.ifBlank { "Lecture, ${Lectures.dateNow()}" },
-            date = Lectures.dateNow(),
-            fromLang = fromLang,
-            toLang = toLang,
-            durationSeconds = lectureElapsed,
-            chunks = lectureChunks.toList()
-        )
-        Lectures.save(context, session)
-        lectureSessions = Lectures.all(context)
-        status = "💾 Lecture saved"
-    }
-
     // ── FACE-TO-FACE: continuous, hands-free conversation ──
     // Should we keep the continuous loop alive right now?
     fun shouldFaceListen(): Boolean =
@@ -2334,6 +2161,183 @@ fun SpeechNovaApp(
     fun hasMicPermission(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.RECORD_AUDIO
     ) == PackageManager.PERMISSION_GRANTED
+
+    // ── LECTURE: capture a long talk and translate it as it goes ──
+    // The same continuous-recognition loop as Face-to-Face, but nothing is
+    // spoken back — a phone talking during a lecture is the last thing anyone
+    // wants — so there is no echo to guard against and the mic can simply stay
+    // open. Results are kept as timestamped chunks rather than one block of
+    // text, because a student needs to find their place afterwards.
+    fun stopLectureListening() {
+        lectureRecognizer?.destroy()
+        lectureRecognizer = null
+    }
+
+    fun startLectureListening() {
+        if (!lectureRecording || currentScreen != Screen.LECTURE) {
+            stopLectureListening()
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            status = "❌ Speech recognition not available"
+            lectureRecording = false
+            return
+        }
+        lectureRecognizer?.destroy()
+        val sr = SpeechRecognizer.createSpeechRecognizer(context)
+        lectureRecognizer = sr
+
+        fun reArm(delayMs: Long) {
+            handler.postDelayed({
+                if (lectureRecording && currentScreen == Screen.LECTURE) {
+                    startLectureListening()
+                } else {
+                    stopLectureListening()
+                }
+            }, delayMs)
+        }
+
+        fun addChunk(heard: String) {
+            val cleaned = TextCleaner.clean(heard, fromLang)
+            if (cleaned.isBlank()) return
+            val now = System.currentTimeMillis()
+            val gapMs = if (lastLectureResultAt == 0L) 0L else now - lastLectureResultAt
+            lastLectureResultAt = now
+            val offset = ((now - lectureStartedAt) / 1000).toInt()
+
+            fun append(translated: String) {
+                lectureChunks.add(
+                    LectureChunk(
+                        clockTime = Lectures.clockNow(),
+                        offsetLabel = Lectures.formatDuration(offset),
+                        original = cleaned,
+                        translated = translated,
+                        afterPauseSeconds =
+                            if (gapMs >= LECTURE_PAUSE_MS) (gapMs / 1000).toInt() else 0
+                    )
+                )
+            }
+
+            if (fromLang == toLang) {
+                append(cleaned)
+                return
+            }
+            val translator = mlTranslator
+            if (translator == null) {
+                append("")
+                return
+            }
+            translator.translate(cleaned)
+                .addOnSuccessListener { append(it.trim()) }
+                .addOnFailureListener { append("") }
+        }
+
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {
+                micLevel = (rmsdB.coerceIn(0f, 10f)) / 10f
+            }
+            override fun onBufferReceived(b: ByteArray?) {}
+            override fun onEndOfSpeech() { micLevel = 0f }
+
+            override fun onError(error: Int) {
+                micLevel = 0f
+                sr.destroy()
+                if (lectureRecognizer === sr) lectureRecognizer = null
+                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                    lectureRecording = false
+                    status = "❌ Microphone permission denied"
+                    return
+                }
+                if (SpeechPacks.looksLikeMissingLanguage(error)) {
+                    reportOfflineVoiceMissing(fromLang)
+                }
+                // A lecture has long gaps. Keep going rather than giving up.
+                reArm(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700 else 300)
+            }
+
+            override fun onResults(results: Bundle?) {
+                micLevel = 0f
+                val heard = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.trim().orEmpty()
+                sr.destroy()
+                if (lectureRecognizer === sr) lectureRecognizer = null
+                lectureLive = ""
+                if (heard.isNotBlank()) addChunk(heard)
+                reArm(200)
+            }
+
+            override fun onPartialResults(partial: Bundle?) {
+                val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!t.isNullOrBlank()) lectureLive = t
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[fromLang] ?: "en-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra("android.speech.extra.DICTATION_MODE", true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !isOnline(context))
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_COMPLETE_SILENCE_MS
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                SPEECH_POSSIBLY_COMPLETE_SILENCE_MS
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, true)
+            }
+        }
+        try {
+            sr.startListening(intent)
+        } catch (_: Exception) {
+            reArm(800)
+        }
+    }
+
+    fun startLecture() {
+        if (!hasMicPermission()) {
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        lectureChunks.clear()
+        lectureLive = ""
+        lectureStartedAt = System.currentTimeMillis()
+        lastLectureResultAt = 0L
+        lectureElapsed = 0
+        lectureRecording = true
+        startLectureListening()
+    }
+
+    fun stopLecture() {
+        lectureRecording = false
+        stopLectureListening()
+        micLevel = 0f
+        lectureLive = ""
+        if (lectureChunks.isEmpty()) return
+        val session = LectureSession(
+            id = System.currentTimeMillis(),
+            title = lectureTitle.ifBlank { "Lecture, ${Lectures.dateNow()}" },
+            date = Lectures.dateNow(),
+            fromLang = fromLang,
+            toLang = toLang,
+            durationSeconds = lectureElapsed,
+            chunks = lectureChunks.toList()
+        )
+        Lectures.save(context, session)
+        lectureSessions = Lectures.all(context)
+        status = "💾 Lecture saved"
+    }
+
 
     fun hasCameraPermission(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.CAMERA
