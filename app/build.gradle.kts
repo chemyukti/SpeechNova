@@ -14,9 +14,10 @@ android {
         targetSdk = 36
         // 7 was rejected for ad content inconsistent with the content rating,
         // 8 for a Families ad-format violation (the rewarded ad), and 10 for
-        // more than one ad on a page. A rejected code can never be re-uploaded.
-        versionCode = 11
-        versionName = "1.6.1"
+        // more than one ad on a page. 9 is the version currently live. A code
+        // that has been uploaded can never be reused, whatever became of it.
+        versionCode = 14
+        versionName = "1.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
