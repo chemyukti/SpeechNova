@@ -5358,6 +5358,20 @@ private fun HomeScreenContent(
                             )
                         }
                     }
+
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.35f))
+                            .padding(2.dp)
+                            .clip(CircleShape)
+                            .background(ACCENT_SETTINGS)
+                            .clickable(onClick = onShowSettings),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("⚙️", fontSize = 17.sp)
+                    }
                 }
 
                 Spacer(Modifier.height(14.dp))
@@ -5370,7 +5384,6 @@ private fun HomeScreenContent(
                     HeaderShortcut("📝", "Text", ACCENT_TEXT, onTranslateText)
                     HeaderShortcut("📷", "Scan", ACCENT_SCAN, onScanCamera)
                     HeaderShortcut("⭐", "Saved", ACCENT_SAVED, onShowFavorites)
-                    HeaderShortcut("⚙️", "Settings", ACCENT_SETTINGS, onShowSettings)
                 }
             }
         }
