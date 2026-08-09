@@ -1037,6 +1037,11 @@ fun SpeechNovaApp(
     // phone call, an interruption, or anything you'd rather not have
     // translated and shown to the person opposite.
     var facePaused by remember { mutableStateOf(false) }
+    // Whose turn it is to speak. Face-to-Face alternates automatically: after
+    // each reply the mic reopens in the *other* language, so two people can
+    // talk without anyone reaching for the phone to change direction. Swapping
+    // by hand is for changing the language pair, not for taking turns.
+    var faceTurnIsSource by remember { mutableStateOf(true) }
 
     // ── Lecture mode ──
     var lectureRecording by remember { mutableStateOf(false) }
@@ -1752,23 +1757,29 @@ fun SpeechNovaApp(
                 }
 
                 if (!text.isNullOrBlank()) {
-                    bottomBubble = text
+                    // The speaker's own words go on their side of the phone,
+                    // and the translation on the other person's.
+                    val speakingSource = faceTurnIsSource
+                    if (speakingSource) bottomBubble = text else topBubble = text
                     // Latch *before* translating: a slow translation must not
                     // leave a window where the mic reopens just in time to
                     // hear the reply it is about to produce.
                     isFaceReplying = true
                     faceReplySeq++
                     val replySeq = faceReplySeq
-                    val translator = mlTranslator
+                    // Forwards for the source side, backwards for the other —
+                    // downloadModel already builds both.
+                    val translator = if (speakingSource) mlTranslator else reverseTranslator
+                    val replyLang = if (speakingSource) toLang else fromLang
                     // No translator configured — don't latch the mic shut.
                     if (translator == null) isFaceReplying = false
                     translator?.translate(text)
                         ?.addOnSuccessListener { translated ->
                             var t = translated.trim()
                             if (!t.endsWith(".") && !t.endsWith("?") && !t.endsWith("!")) t += "."
-                            topBubble = t
+                            if (speakingSource) topBubble = t else bottomBubble = t
                             lastFaceReply = t
-                            selectVoice(toLang)
+                            selectVoice(replyLang)
                             tts?.speak(t, TextToSpeech.QUEUE_FLUSH, ttsParams(), FACE_UTTERANCE_ID)
                             // If the engine never reports that it finished,
                             // release the mic anyway rather than going deaf —
@@ -1793,7 +1804,7 @@ fun SpeechNovaApp(
                     ?.firstOrNull()
                 // Don't echo our own reply back into the speaker's bubble.
                 if (!t.isNullOrBlank() && !soundsLikeOurOwnVoice(t, lastFaceReply)) {
-                    bottomBubble = t
+                    if (faceTurnIsSource) bottomBubble = t else topBubble = t
                 }
             }
 
@@ -1802,7 +1813,10 @@ fun SpeechNovaApp(
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langToSTT[fromLang] ?: "en-IN")
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE,
+                langToSTT[if (faceTurnIsSource) fromLang else toLang] ?: "en-IN"
+            )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra("android.speech.extra.DICTATION_MODE", true)
@@ -2649,7 +2663,13 @@ fun SpeechNovaApp(
         // If a newer reply starts during the guard, leave the mic shut for it.
         val finishedSeq = faceReplySeq
         handler.postDelayed({
-            if (faceReplySeq == finishedSeq) isFaceReplying = false
+            if (faceReplySeq == finishedSeq) {
+                // The reply has been said, so the other person is the one who
+                // speaks next. Flipping here rather than when the mic reopens
+                // keeps the turn and the recognizer language in step.
+                faceTurnIsSource = !faceTurnIsSource
+                isFaceReplying = false
+            }
         }, FACE_ECHO_GUARD_MS)
     }
 
@@ -2698,6 +2718,7 @@ fun SpeechNovaApp(
         if (currentScreen == Screen.FACE2FACE && !facePaused && hasMicPermission()) {
             topBubble = ""
             bottomBubble = ""
+            faceTurnIsSource = true
             // Drop the recognizer listening in the previous language, then give
             // the speech service a moment before asking for a new one — back to
             // back destroy/create otherwise comes back RECOGNIZER_BUSY.
@@ -3460,6 +3481,7 @@ fun SpeechNovaApp(
                     isListening = isFaceListening,
                     micLevel = micLevel,
                     paused = facePaused,
+                    turnIsSource = faceTurnIsSource,
                     onTogglePause = { facePaused = !facePaused },
                     onSwapLangs = {
                         // Just change the languages — the effect above owns the
@@ -5726,6 +5748,42 @@ private fun LearnScreenContent(
 
         Spacer(Modifier.height(12.dp))
 
+        // ── Sub-tabs ──
+        // The alphabet tables run to forty-odd letters, so anyone wanting the
+        // word list had to scroll past all of them. Two tabs, one job each.
+        var learnTab by remember { mutableIntStateOf(0) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        ) {
+            listOf("🔤 Alphabet", "🗣️ Words").forEachIndexed { index, label ->
+                val active = learnTab == index
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = if (index == 0) 6.dp else 0.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { learnTab = index },
+                    color = if (active) Color(0xFF6366f1) else Color(0xFF1e293b),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        label,
+                        color = if (active) Color.White else Color.White.copy(alpha = 0.6f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        if (learnTab == 0) {
         if (script == null) {
             Surface(
                 modifier = Modifier
@@ -5774,7 +5832,9 @@ private fun LearnScreenContent(
                 Spacer(Modifier.height(10.dp))
             }
         }
+        } // end of the Alphabet tab
 
+        if (learnTab == 1) {
         // ── Vocabulary & speak-and-check practice ──
         Spacer(Modifier.height(6.dp))
         Row(
@@ -5847,6 +5907,7 @@ private fun LearnScreenContent(
             )
         }
         Spacer(Modifier.height(12.dp))
+        } // end of the Words tab
     }
 }
 
@@ -6146,6 +6207,7 @@ private fun FaceToFaceScreenContent(
     isListening: Boolean,
     micLevel: Float,
     paused: Boolean,
+    turnIsSource: Boolean,
     onTogglePause: () -> Unit,
     onSwapLangs: () -> Unit
 ) {
@@ -6175,6 +6237,30 @@ private fun FaceToFaceScreenContent(
                 )
             }
         }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            color = if (paused) Color(0xFF334155) else Color(0xFF312e81),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text(
+                when {
+                    paused -> "Paused — tap Resume listening above"
+                    turnIsSource -> "🎙 Your turn — speak in $fromLang"
+                    else -> "🎙 Their turn — they speak in $toLang"
+                },
+                color = if (paused) Color.White.copy(alpha = 0.7f) else Color(0xFFc7d2fe),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 7.dp)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
 
         Column(
             modifier = Modifier
